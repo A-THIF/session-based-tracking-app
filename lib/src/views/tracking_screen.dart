@@ -94,6 +94,15 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
     }
   }
 
+  void _startBackgroundTracking(String sessionCode) async {
+  final service = FlutterBackgroundService();
+  final String deviceName = await _apiService.getDeviceName();
+
+  service.invoke("startTracking", {
+    "sessionCode": sessionCode,
+    "deviceId": deviceName,
+  });
+}
   // --- Logic for User A (Host) ---
   void _startLocationTracking({String? deviceId, bool publish = false}) {
     const locationSettings = LocationSettings(

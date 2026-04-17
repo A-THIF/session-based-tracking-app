@@ -25,52 +25,29 @@ Future<void> initializeService() async {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
+  final ably = AblyService(); // This is a NEW instance for the background
 
-  final ably = AblyService();
-
-  /// Android-specific controls
-  if (service is AndroidServiceInstance) {
-    service.on('setAsForeground').listen((event) {
-      service.setAsForegroundService();
-    });
-
-    service.on('setAsBackground').listen((event) {
-      service.setAsBackgroundService();
-    });
-  }
-
-  /// Stop service
-  service.on('stopService').listen((event) {
-    service.stopSelf();
-  });
-
-  /// 🔥 START TRACKING EVENT
   service.on('startTracking').listen((event) async {
     final sessionCode = event?['sessionCode'];
     final deviceId = event?['deviceId'];
 
     if (sessionCode == null || deviceId == null) return;
 
-    /// ✅ Initialize Ably
+    // IMPORTANT: You must re-initialize with the session code in the background
     await ably.initAbly(sessionCode);
 
-    /// ✅ Start location stream
     Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
+      locationSettings: const AndroidSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 10,
+        foregroundNotificationConfig: ForegroundNotificationConfig(
+          notificationText: "Trace is sharing your location live",
+          notificationTitle: "Running in Background",
+          enableWakeLock: true,
+        ),
       ),
     ).listen((position) {
-      /// ✅ Publish to Ably
       ably.publishLocation(deviceId, position.latitude, position.longitude);
-
-      /// ✅ Update notification (Android)
-      if (service is AndroidServiceInstance) {
-        service.setForegroundNotificationInfo(
-          title: "Trace: Active Session",
-          content: "Sharing location in $sessionCode",
-        );
-      }
     });
   });
 }

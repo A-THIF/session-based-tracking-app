@@ -38,6 +38,7 @@ dependencies:
   google_maps_flutter: ^2.6.0
   flutter_compass: ^0.8.0
   flutter_background_service: ^5.0.7 # Add this!
+  device_info_plus: ^12.4.0 # Add this for device info
 
 dev_dependencies:
   flutter_test:

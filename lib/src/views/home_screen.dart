@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/session_model.dart';
 import '../services/api_service.dart';
 import 'waiting_room_screen.dart';
+import dart:io show Platform;
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -19,6 +20,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   // --- Logic for User A (Start Session) ---
   Future<void> _handleStartSession() async {
+    final hasPermission = await PermissionGuard.checkSettings(context);
+    if (!hasPermission) return;
     setState(() {
       _isLoading = true;
       _statusMessage = 'Creating session...';
@@ -63,9 +66,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     try {
       // 1. Call your Render API to verify code
       // We will pass 'RedmiNote13Athif' as a placeholder for deviceId for now
+      final String deviceId = "${Platform.operatingSystem}_${DateTime.now().millisecondsSinceEpoch}";
       final Session session = await _apiService.joinSession(
         code,
-        'RedmiNote13Athif',
+        deviceId,
       );
 
       // 2. Navigate to Waiting Room
