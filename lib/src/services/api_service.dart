@@ -2,8 +2,6 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../constants/app_constants.dart';
 import '../models/session_model.dart';
-import '../constants/constants.dart';
-import '../models/models.dart';
 
 class ApiService {
   final String _baseUrl = AppConstants.baseUrl;

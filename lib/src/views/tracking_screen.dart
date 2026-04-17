@@ -124,34 +124,53 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
 
   // --- Logic for User B (Follower) ---
   void _listenToLiveUpdates() {
-    // 6. Listen directly to the Ably channel for incoming location updates.
-    _ablyService.getLocationStream().listen((ably.Message message) {
-      // Ably sends { "items": [ { "channel": ..., "message": { "data": {lat, lng, deviceId} } } ] }
+  // 6. Listen directly to the Ably channel for incoming location updates.
+  _ablyService.getLocationStream().listen((ably.Message message) {
+    // Safety check: ensure data exists and is a Map
+    if (message.data == null || message.data is! Map) {
+      debugPrint("Received empty or invalid Ably message data");
+      return;
+    }
+
+    try {
       final LocationPayload payload = LocationPayload.fromJson(
-        message.data as Map<String, dynamic>,
+        Map<String, dynamic>.from(message.data as Map),
       );
 
       // 7. Solving Packet Flooding: Ignore Old Packets!
-      if (payload.timestamp.isBefore(_lastPacketTime)) {
-        return; // Laggy packet arrived late. Ignore it to prevent marker jumping.
+      // Only proceed if this packet is newer than the last one we processed
+      if (payload.timestamp.isAfter(_lastPacketTime)) {
+        _lastPacketTime = payload.timestamp;
+
+        if (mounted) {
+          setState(() {
+            _trackedUserPosition = payload.position;
+            
+            // Add to polyline trail
+            _polylineCoordinates.add(payload.position);
+            
+            // Update Map Visuals
+            _updateMarkerPosition(payload);
+            _drawPolyline(_polylineCoordinates);
+            
+            // Update Proximity (Compass/HUD logic)
+            _refreshProximityState();
+
+            // Update UI Stats Text
+            _distance = _formatDistance(_distanceInMeters);
+            _eta = 'LIVE'; // Update this based on your preference
+          });
+        }
+      } else {
+        debugPrint("Ignored out-of-order packet: ${payload.timestamp}");
       }
-      _lastPacketTime = payload.timestamp;
-
-      // Update Map
-      _trackedUserPosition = payload.position;
-      _polylineCoordinates.add(payload.position);
-      _updateMarkerPosition(payload);
-      _drawPolyline(_polylineCoordinates);
-      _refreshProximityState();
-
-      // Update UI Stats (Will implement real distance calc later)
-      setState(() {
-        _distance = _formatDistance(_distanceInMeters);
-        _eta = '2 MIN';
-      });
-    });
-  }
-
+    } catch (e) {
+      debugPrint("Error parsing LocationPayload: $e");
+    }
+  }, onError: (error) {
+    debugPrint("Ably Stream Error: $error");
+  });
+}
   void _refreshProximityState() {
     if (_myCurrentPos == null || _trackedUserPosition == null) {
       return;

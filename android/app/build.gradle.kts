@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.example.session_based_tracking_app"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

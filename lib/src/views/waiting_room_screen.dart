@@ -29,17 +29,20 @@ class _WaitingRoomScreenState extends ConsumerState<WaitingRoomScreen> {
   }
 
   Future<void> _connectAbly() async {
-    // This uses your backend to get the Ably token and connect to the room
+  try {
     _ablyService = ref.read(ablyServiceProvider);
+    
+    // 1. Wait for connection and channel initialization
     await _ablyService.initAbly(widget.sessionCode);
 
-    // Once Ably connects, we are "in the room".
-    // When the phone says another user is present, we move to the map
+    // 2. ONLY subscribe after initAbly is done
     _ablyService.subscribeToPresence((presenceMsg) {
       if (presenceMsg.action == ably.PresenceAction.enter ||
           presenceMsg.action == ably.PresenceAction.present) {
-        // A second person is here! Navigate to Map.
+        
         if (!mounted) return;
+        
+        // Navigation logic...
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
@@ -51,7 +54,11 @@ class _WaitingRoomScreenState extends ConsumerState<WaitingRoomScreen> {
         );
       }
     });
+  } catch (e) {
+    debugPrint("Ably Connection Failed: $e");
+    // Show a snackbar so you know if the token failed
   }
+}
 
   @override
   void dispose() {
