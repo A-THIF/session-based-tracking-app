@@ -1,6 +1,5 @@
 import 'dart:ui';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:geolocator/geolocator.dart';
 import 'ably_service.dart';
 
@@ -37,7 +36,7 @@ void onStart(ServiceInstance service) async {
     await ably.initAbly(sessionCode);
 
     Geolocator.getPositionStream(
-      locationSettings: const AndroidSettings(
+      locationSettings: AndroidSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 10,
         foregroundNotificationConfig: ForegroundNotificationConfig(

@@ -35,6 +35,9 @@ class _WaitingRoomScreenState extends ConsumerState<WaitingRoomScreen> {
     // 1. Wait for connection and channel initialization
     await _ablyService.initAbly(widget.sessionCode);
 
+    // 🔥 ADD THIS LINE: Tell Ably you are "Present" in the room
+    _ablyService.enterPresence(widget.isHost ? "HOST" : "GUEST");
+
     // 2. ONLY subscribe after initAbly is done
     _ablyService.subscribeToPresence((presenceMsg) {
       if (presenceMsg.action == ably.PresenceAction.enter ||

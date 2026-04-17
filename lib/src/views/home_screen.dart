@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/session_model.dart';
 import '../services/api_service.dart';
 import 'waiting_room_screen.dart';
-import dart:io show Platform;
+import '../widgets/permission_guard.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -58,21 +58,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final String code = _codeController.text.trim().toUpperCase();
     if (code.isEmpty || code.length != 6) return;
 
+    // 1. Check Permissions FIRST
+    final hasPermission = await PermissionGuard.checkSettings(context);
+    if (!hasPermission) return;
+
     setState(() {
       _isLoading = true;
       _statusMessage = 'Joining...';
     });
 
     try {
-      // 1. Call your Render API to verify code
-      // We will pass 'RedmiNote13Athif' as a placeholder for deviceId for now
-      final String deviceId = "${Platform.operatingSystem}_${DateTime.now().millisecondsSinceEpoch}";
-      final Session session = await _apiService.joinSession(
-        code,
-        deviceId,
-      );
+      // 2. Get the real unique Device ID
+      final String deviceId = await _apiService.getDeviceId();
 
-      // 2. Navigate to Waiting Room
+      // 3. Join with the dynamic ID
+      final Session session = await _apiService.joinSession(code, deviceId);
+
+      // 4. Navigate to Waiting Room
       if (!mounted) return;
       Navigator.push(
         context,

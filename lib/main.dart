@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'src/constants/app_colors.dart';
 import 'src/constants/retro_theme.dart';
 import 'src/views/home_screen.dart';
 import 'src/services/background_service.dart'; // ✅ ADD THIS

@@ -58,6 +58,10 @@ class AblyService {
     });
   }
 
+  void enterPresence(String deviceId) {
+    _channel?.presence.enter(deviceId);
+  }
+
   // Subscribe to Location (Used by User B)
   // FIXED: Return an empty stream if channel isn't ready instead of crashing
   Stream<ably.Message> getLocationStream() {

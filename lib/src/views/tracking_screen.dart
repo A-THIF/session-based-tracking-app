@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:ably_flutter/ably_flutter.dart' as ably;
 
@@ -95,14 +96,15 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
   }
 
   void _startBackgroundTracking(String sessionCode) async {
-  final service = FlutterBackgroundService();
-  final String deviceName = await _apiService.getDeviceName();
+    final service = FlutterBackgroundService();
+    final String deviceName = await _apiService.getDeviceName();
 
-  service.invoke("startTracking", {
-    "sessionCode": sessionCode,
-    "deviceId": deviceName,
-  });
-}
+    service.invoke("startTracking", {
+      "sessionCode": sessionCode,
+      "deviceId": deviceName,
+    });
+  }
+
   // --- Logic for User A (Host) ---
   void _startLocationTracking({String? deviceId, bool publish = false}) {
     const locationSettings = LocationSettings(
@@ -133,53 +135,57 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
 
   // --- Logic for User B (Follower) ---
   void _listenToLiveUpdates() {
-  // 6. Listen directly to the Ably channel for incoming location updates.
-  _ablyService.getLocationStream().listen((ably.Message message) {
-    // Safety check: ensure data exists and is a Map
-    if (message.data == null || message.data is! Map) {
-      debugPrint("Received empty or invalid Ably message data");
-      return;
-    }
-
-    try {
-      final LocationPayload payload = LocationPayload.fromJson(
-        Map<String, dynamic>.from(message.data as Map),
-      );
-
-      // 7. Solving Packet Flooding: Ignore Old Packets!
-      // Only proceed if this packet is newer than the last one we processed
-      if (payload.timestamp.isAfter(_lastPacketTime)) {
-        _lastPacketTime = payload.timestamp;
-
-        if (mounted) {
-          setState(() {
-            _trackedUserPosition = payload.position;
-            
-            // Add to polyline trail
-            _polylineCoordinates.add(payload.position);
-            
-            // Update Map Visuals
-            _updateMarkerPosition(payload);
-            _drawPolyline(_polylineCoordinates);
-            
-            // Update Proximity (Compass/HUD logic)
-            _refreshProximityState();
-
-            // Update UI Stats Text
-            _distance = _formatDistance(_distanceInMeters);
-            _eta = 'LIVE'; // Update this based on your preference
-          });
+    // 6. Listen directly to the Ably channel for incoming location updates.
+    _ablyService.getLocationStream().listen(
+      (ably.Message message) {
+        // Safety check: ensure data exists and is a Map
+        if (message.data == null || message.data is! Map) {
+          debugPrint("Received empty or invalid Ably message data");
+          return;
         }
-      } else {
-        debugPrint("Ignored out-of-order packet: ${payload.timestamp}");
-      }
-    } catch (e) {
-      debugPrint("Error parsing LocationPayload: $e");
-    }
-  }, onError: (error) {
-    debugPrint("Ably Stream Error: $error");
-  });
-}
+
+        try {
+          final LocationPayload payload = LocationPayload.fromJson(
+            Map<String, dynamic>.from(message.data as Map),
+          );
+
+          // 7. Solving Packet Flooding: Ignore Old Packets!
+          // Only proceed if this packet is newer than the last one we processed
+          if (payload.timestamp.isAfter(_lastPacketTime)) {
+            _lastPacketTime = payload.timestamp;
+
+            if (mounted) {
+              setState(() {
+                _trackedUserPosition = payload.position;
+
+                // Add to polyline trail
+                _polylineCoordinates.add(payload.position);
+
+                // Update Map Visuals
+                _updateMarkerPosition(payload);
+                _drawPolyline(_polylineCoordinates);
+
+                // Update Proximity (Compass/HUD logic)
+                _refreshProximityState();
+
+                // Update UI Stats Text
+                _distance = _formatDistance(_distanceInMeters);
+                _eta = 'LIVE'; // Update this based on your preference
+              });
+            }
+          } else {
+            debugPrint("Ignored out-of-order packet: ${payload.timestamp}");
+          }
+        } catch (e) {
+          debugPrint("Error parsing LocationPayload: $e");
+        }
+      },
+      onError: (error) {
+        debugPrint("Ably Stream Error: $error");
+      },
+    );
+  }
+
   void _refreshProximityState() {
     if (_myCurrentPos == null || _trackedUserPosition == null) {
       return;

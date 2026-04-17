@@ -8,8 +8,8 @@ import 'package:device_info_plus/device_info_plus.dart';
 class ApiService {
   final String _baseUrl = AppConstants.baseUrl;
   final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
-  
-   Future<String> getDeviceId() async {
+
+  Future<String> getDeviceId() async {
     try {
       if (Platform.isAndroid) {
         final androidInfo = await _deviceInfo.androidInfo;
@@ -53,6 +53,10 @@ class ApiService {
   Future<Map<String, dynamic>> getSessionDetails(String code) async {
     final response = await http.get(Uri.parse('$_baseUrl/session/$code'));
     return jsonDecode(response.body);
+  }
+
+  Future<String> getDeviceName() async {
+    return await getDeviceId();
   }
 
   Future<Map<String, dynamic>> getAblyToken(String code) async {
