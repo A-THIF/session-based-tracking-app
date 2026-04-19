@@ -8,9 +8,6 @@ import 'package:latlong2/latlong.dart'; // Use latlong2, not latlong
 import 'package:ably_flutter/ably_flutter.dart' as ably;
 
 // Hide LatLng from Google Maps to avoid conflicts
-import 'package:google_maps_flutter/google_maps_flutter.dart'
-    hide LatLng, Polyline, Marker;
-
 import '../models/location_payload.dart';
 import '../services/ably_service.dart';
 import '../services/api_service.dart';

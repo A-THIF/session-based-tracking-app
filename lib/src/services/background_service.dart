@@ -33,7 +33,7 @@ void onStart(ServiceInstance service) async {
     if (sessionCode == null || deviceId == null) return;
 
     // IMPORTANT: You must re-initialize with the session code in the background
-    await ably.initAbly(sessionCode);
+    await ably.initAbly(sessionCode, deviceId);
 
     Geolocator.getPositionStream(
       locationSettings: AndroidSettings(

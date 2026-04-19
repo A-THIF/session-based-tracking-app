@@ -58,7 +58,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final String code = _codeController.text.trim().toUpperCase();
     if (code.isEmpty || code.length != 6) return;
 
-    // 1. Check Permissions FIRST
+    // 1. Check Permissions
     final hasPermission = await PermissionGuard.checkSettings(context);
     if (!hasPermission) return;
 
@@ -68,10 +68,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
 
     try {
-      // 2. Get the real unique Device ID
+      // 2. Get the real unique Device ID from our Service
       final String deviceId = await _apiService.getDeviceId();
 
-      // 3. Join with the dynamic ID
+      // 3. Join the session using that ID
       final Session session = await _apiService.joinSession(code, deviceId);
 
       // 4. Navigate to Waiting Room
@@ -84,14 +84,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       );
     } catch (e) {
+      debugPrint("Join Error: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Invalid code or expired session')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-        _statusMessage = 'Waiting to connect...';
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _statusMessage = 'Waiting to connect...';
+        });
+      }
     }
   }
 

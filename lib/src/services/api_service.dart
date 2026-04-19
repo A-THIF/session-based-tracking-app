@@ -13,15 +13,17 @@ class ApiService {
     try {
       if (Platform.isAndroid) {
         final androidInfo = await _deviceInfo.androidInfo;
-        return 'android_${androidInfo.id}';
+        // Use manufacturer + model for a readable name like "Xiaomi 23090RA98I"
+        return '${androidInfo.manufacturer}_${androidInfo.model}'.replaceAll(
+          ' ',
+          '_',
+        );
       } else if (Platform.isIOS) {
         final iosInfo = await _deviceInfo.iosInfo;
-        return 'ios_${iosInfo.identifierForVendor}';
-      } else {
-        return 'unknown_device';
+        return (iosInfo.name ?? 'iPhone').replaceAll(' ', '_');
       }
+      return 'unknown_device';
     } catch (e) {
-      print("Error getting device ID: $e");
       return 'error_device';
     }
   }
@@ -60,9 +62,18 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> getAblyToken(String code) async {
+    final String deviceId = await getDeviceId(); // Get the ID first
     final response = await http.get(
-      Uri.parse('$_baseUrl/auth?sessionCode=$code'),
+      Uri.parse(
+        '$_baseUrl/auth?sessionCode=$code&clientId=$deviceId',
+      ), // Send it
     );
-    return jsonDecode(response.body);
+    final data = jsonDecode(response.body);
+    if (data['success'] == true) {
+      return data;
+    } else {
+      print("Backend Auth Error: ${data['message']}");
+      throw Exception("Ably Token generation failed");
+    }
   }
 }

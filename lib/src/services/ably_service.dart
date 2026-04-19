@@ -9,31 +9,25 @@ class AblyService {
   bool isInitialized = false;
 
   // Initialize and Connect
-  Future<void> initAbly(String sessionCode) async {
+  Future<void> initAbly(String sessionCode, String clientId) async {
     try {
       final tokenMap = await _apiService.getAblyToken(sessionCode);
       final String? tokenString = tokenMap['token'] as String?;
 
       if (tokenString == null) {
-        print("Error: Ably Token is null from API");
-        return;
+        throw Exception("Ably Token is null from API");
       }
 
-      // Correct way for ably_flutter 1.2.44:
-      // Create empty options, then assign tokenDetails using the string
       final clientOptions = ably.ClientOptions();
       clientOptions.tokenDetails = ably.TokenDetails(tokenString);
+      clientOptions.clientId =
+          clientId; // CRITICAL: must match what backend signed
 
       _realtime = ably.Realtime(options: clientOptions);
-
-      _realtime!.connection.on().listen((stateChange) {
-        print('Ably Connection State: ${stateChange.current}');
-      });
-
       await _realtime!.connect();
-
       _channel = _realtime!.channels.get('session_$sessionCode');
-      print("Ably Connected successfully to session_$sessionCode");
+
+      print("Ably Connected as: $clientId");
     } catch (e) {
       print("Failed to initialize Ably: $e");
       rethrow;
@@ -58,8 +52,14 @@ class AblyService {
     });
   }
 
-  void enterPresence(String deviceId) {
-    _channel?.presence.enter(deviceId);
+  Future<void> enterPresence(String deviceName) async {
+    await _channel?.presence.enter(deviceName);
+  }
+
+  // Add this to get the initial list of people already in the room
+  Future<List<ably.PresenceMessage>> getPresentMembers() async {
+    if (_channel == null) return [];
+    return await _channel!.presence.get();
   }
 
   // Subscribe to Location (Used by User B)
