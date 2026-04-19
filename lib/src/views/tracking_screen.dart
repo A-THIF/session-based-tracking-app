@@ -3,9 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart'; // Use latlong2, not latlong
 import 'package:ably_flutter/ably_flutter.dart' as ably;
+
+// Hide LatLng from Google Maps to avoid conflicts
+import 'package:google_maps_flutter/google_maps_flutter.dart'
+    hide LatLng, Polyline, Marker;
 
 import '../models/location_payload.dart';
 import '../services/ably_service.dart';
@@ -29,10 +33,8 @@ class TrackingScreen extends ConsumerStatefulWidget {
 }
 
 class _TrackingScreenState extends ConsumerState<TrackingScreen> {
-  // Map State
-  final Completer<GoogleMapController> _controller = Completer();
-  final Set<Marker> _markers = {};
-  final Set<Polyline> _polylines = {};
+  // OSM Map State
+  final MapController _mapController = MapController();
   List<LatLng> _polylineCoordinates = [];
 
   // Real-time State
@@ -40,16 +42,15 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
   final ApiService _apiService = ApiService();
   StreamSubscription<Position>? _locationSubscription;
   DateTime _lastPacketTime = DateTime.fromMillisecondsSinceEpoch(0);
+
   Position? _myCurrentPos;
   LatLng? _trackedUserPosition;
   bool _isCompassHudActive = false;
   double _distanceInMeters = 0;
   double _targetBearing = 0;
 
-  static const double _compassHudTriggerDistance = 20;
-
-  // UI State (Matching Mockup)
-  String _trackedName = 'Liam'; // Example
+  // UI State
+  String _trackedName = 'Liam';
   String _distance = '0m';
   String _eta = 'Calculating...';
 
@@ -57,37 +58,28 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
   void initState() {
     super.initState();
     _ablyService = ref.read(ablyServiceProvider);
-
-    // 1. Initial Map Setup (Sync previous data + start live)
     _initializeTracking();
   }
 
   Future<void> _initializeTracking() async {
     try {
-      if (!mounted) return;
-
-      // 2. Pro Feature: Fetch Path History from Render Backend (for polylines)
-      // This solves the problem: User B joins, they see the line User A already walked.
       final details = await _apiService.getSessionDetails(widget.sessionCode);
-      final List<dynamic> path = details['path'];
+      final List<dynamic> path = details['path'] ?? [];
 
       if (path.isNotEmpty) {
-        _polylineCoordinates = path
-            .map((coords) => LatLng(coords['latitude'], coords['longitude']))
-            .toList();
-        _drawPolyline(_polylineCoordinates);
+        setState(() {
+          _polylineCoordinates = path
+              .map((coords) => LatLng(coords['latitude'], coords['longitude']))
+              .toList();
+        });
       }
 
-      // 3. User A Logic (The Publisher)
+      final String deviceId = await _apiService.getDeviceId();
+
       if (widget.isHost) {
-        // We will pass 'RedmiNote13Athif' as deviceId for now
-        _startLocationTracking(deviceId: 'RedmiNote13Athif', publish: true);
-      }
-
-      // 4. User B Logic (The Subscriber)
-      if (!widget.isHost) {
+        _startLocationTracking(deviceId: deviceId, publish: true);
+      } else {
         _startLocationTracking();
-        // User B listens to the live stream
         _listenToLiveUpdates();
       }
     } catch (e) {
@@ -95,32 +87,21 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
     }
   }
 
-  void _startBackgroundTracking(String sessionCode) async {
-    final service = FlutterBackgroundService();
-    final String deviceName = await _apiService.getDeviceName();
-
-    service.invoke("startTracking", {
-      "sessionCode": sessionCode,
-      "deviceId": deviceName,
-    });
-  }
-
-  // --- Logic for User A (Host) ---
   void _startLocationTracking({String? deviceId, bool publish = false}) {
-    const locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: 10,
-    ); // Update every 10m
-
     _locationSubscription =
         Geolocator.getPositionStream(
-          locationSettings: locationSettings,
+          locationSettings:  AndroidSettings(
+            accuracy: LocationAccuracy.best,
+            distanceFilter: 10,
+            intervalDuration: Duration(seconds: 5),
+          ),
         ).listen((Position position) {
           _myCurrentPos = position;
+          final myLatLng = LatLng(position.latitude, position.longitude);
+
           _refreshProximityState();
 
           if (publish && deviceId != null) {
-            // 5. This publishes to Ably (fast) which triggers the Render Webhook (saves to DB)
             _ablyService.publishLocation(
               deviceId,
               position.latitude,
@@ -128,161 +109,74 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
             );
           }
 
-          // Also update my own UI
-          _updateUserAMarker(position);
+          setState(() {
+            if (widget.isHost) {
+              _polylineCoordinates.add(myLatLng);
+            }
+          });
+          _mapController.move(myLatLng, _mapController.camera.zoom);
         });
   }
 
-  // --- Logic for User B (Follower) ---
   void _listenToLiveUpdates() {
-    // 6. Listen directly to the Ably channel for incoming location updates.
-    _ablyService.getLocationStream().listen(
-      (ably.Message message) {
-        // Safety check: ensure data exists and is a Map
-        if (message.data == null || message.data is! Map) {
-          debugPrint("Received empty or invalid Ably message data");
-          return;
-        }
+    _ablyService.getLocationStream().listen((ably.Message message) {
+      if (message.data == null) return;
 
-        try {
-          final LocationPayload payload = LocationPayload.fromJson(
-            Map<String, dynamic>.from(message.data as Map),
+      try {
+        final payload = LocationPayload.fromJson(
+          Map<String, dynamic>.from(message.data as Map),
+        );
+
+        if (payload.timestamp.isAfter(_lastPacketTime)) {
+          _lastPacketTime = payload.timestamp;
+
+          setState(() {
+            // Convert google_maps LatLng to latlong2 LatLng if models differ
+            _trackedUserPosition = LatLng(
+              payload.position.latitude,
+              payload.position.longitude,
+            );
+            _polylineCoordinates.add(_trackedUserPosition!);
+            _refreshProximityState();
+          });
+
+          _mapController.move(
+            _trackedUserPosition!,
+            _mapController.camera.zoom,
           );
-
-          // 7. Solving Packet Flooding: Ignore Old Packets!
-          // Only proceed if this packet is newer than the last one we processed
-          if (payload.timestamp.isAfter(_lastPacketTime)) {
-            _lastPacketTime = payload.timestamp;
-
-            if (mounted) {
-              setState(() {
-                _trackedUserPosition = payload.position;
-
-                // Add to polyline trail
-                _polylineCoordinates.add(payload.position);
-
-                // Update Map Visuals
-                _updateMarkerPosition(payload);
-                _drawPolyline(_polylineCoordinates);
-
-                // Update Proximity (Compass/HUD logic)
-                _refreshProximityState();
-
-                // Update UI Stats Text
-                _distance = _formatDistance(_distanceInMeters);
-                _eta = 'LIVE'; // Update this based on your preference
-              });
-            }
-          } else {
-            debugPrint("Ignored out-of-order packet: ${payload.timestamp}");
-          }
-        } catch (e) {
-          debugPrint("Error parsing LocationPayload: $e");
         }
-      },
-      onError: (error) {
-        debugPrint("Ably Stream Error: $error");
-      },
-    );
+      } catch (e) {
+        debugPrint("Payload Error: $e");
+      }
+    });
   }
 
   void _refreshProximityState() {
-    if (_myCurrentPos == null || _trackedUserPosition == null) {
-      return;
-    }
+    if (_myCurrentPos == null || _trackedUserPosition == null) return;
 
-    final wasCompassHudActive = _isCompassHudActive;
-    final distanceInMeters = Geolocator.distanceBetween(
+    _distanceInMeters = Geolocator.distanceBetween(
       _myCurrentPos!.latitude,
       _myCurrentPos!.longitude,
       _trackedUserPosition!.latitude,
       _trackedUserPosition!.longitude,
     );
 
-    final bearing = Geolocator.bearingBetween(
+    _targetBearing = Geolocator.bearingBetween(
       _myCurrentPos!.latitude,
       _myCurrentPos!.longitude,
       _trackedUserPosition!.latitude,
       _trackedUserPosition!.longitude,
     );
 
-    final shouldActivateHud = distanceInMeters < _compassHudTriggerDistance;
-
-    if (mounted) {
-      setState(() {
-        _distanceInMeters = distanceInMeters;
-        _targetBearing = bearing;
-        _distance = _formatDistance(distanceInMeters);
-        _isCompassHudActive = shouldActivateHud;
-      });
-    }
-
-    if (shouldActivateHud && !wasCompassHudActive) {
-      _triggerHapticFeedback();
-    }
-  }
-
-  Future<void> _triggerHapticFeedback() async {
-    await HapticFeedback.lightImpact();
-  }
-
-  String _formatDistance(double distanceInMeters) {
-    if (distanceInMeters >= 1000) {
-      return '${(distanceInMeters / 1000).toStringAsFixed(2)} km';
-    }
-    return '${distanceInMeters.toStringAsFixed(0)}m';
-  }
-
-  // --- Map Utilities ---
-  void _updateUserAMarker(Position pos) {
-    final latlng = LatLng(pos.latitude, pos.longitude);
     setState(() {
-      _markers.add(
-        Marker(
-          markerId: const MarkerId('host'),
-          position: latlng,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueGreen,
-          ),
-        ),
-      );
-    });
-    _moveCamera(latlng);
-  }
-
-  void _updateMarkerPosition(LocationPayload payload) {
-    setState(() {
-      _markers.add(
-        Marker(
-          markerId: MarkerId(payload.deviceId),
-          position: payload.position,
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-        ),
-      );
-    });
-    _moveCamera(payload.position);
-  }
-
-  void _drawPolyline(List<LatLng> coords) {
-    setState(() {
-      _polylines.add(
-        Polyline(
-          polylineId: const PolylineId('path'),
-          points: coords,
-          color: const Color(0xFF5AB9EA),
-          width: 5,
-          patterns: [PatternItem.dot],
-        ),
-      );
+      _distance = _formatDistance(_distanceInMeters);
+      _isCompassHudActive = _distanceInMeters < 20;
     });
   }
 
-  Future<void> _moveCamera(LatLng pos) async {
-    final GoogleMapController mapController = await _controller.future;
-    mapController.animateCamera(
-      CameraUpdate.newCameraPosition(CameraPosition(target: pos, zoom: 16)),
-    );
-  }
+  String _formatDistance(double meters) => meters >= 1000
+      ? '${(meters / 1000).toStringAsFixed(2)} km'
+      : '${meters.toStringAsFixed(0)}m';
 
   @override
   void dispose() {
@@ -295,22 +189,56 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. Google Map (Widget call for cleaner code)
-          GoogleMap(
-            mapType: MapType.normal,
-            initialCameraPosition: const CameraPosition(
-              target: LatLng(13.0827, 80.2707),
-              zoom: 12,
-            ), // Initial view over Chennai
-            markers: _markers,
-            polylines: _polylines,
-            myLocationEnabled: true,
-            myLocationButtonEnabled: false, // Using custom button from mockup
-            onMapCreated: (GoogleMapController controller) =>
-                _controller.complete(controller),
+          // 1. OPEN STREET MAP (OSM)
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: LatLng(13.0827, 80.2707),
+              initialZoom: 15,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.session_based_tracking_app',
+              ),
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: _polylineCoordinates,
+                    color: const Color(0xFF5AB9EA),
+                    strokeWidth: 4,
+                  ),
+                ],
+              ),
+              MarkerLayer(
+                markers: [
+                  if (_myCurrentPos != null)
+                    Marker(
+                      point: LatLng(
+                        _myCurrentPos!.latitude,
+                        _myCurrentPos!.longitude,
+                      ),
+                      child: const Icon(
+                        Icons.my_location,
+                        color: Colors.green,
+                        size: 30,
+                      ),
+                    ),
+                  if (_trackedUserPosition != null)
+                    Marker(
+                      point: _trackedUserPosition!,
+                      child: const Icon(
+                        Icons.location_on,
+                        color: Colors.blue,
+                        size: 40,
+                      ),
+                    ),
+                ],
+              ),
+            ],
           ),
 
-          // 2. Tracking Header (White Bar - Widget Call)
+          // UI Overlays (Header, Stats, Compass)
           Align(
             alignment: Alignment.topCenter,
             child: TrackingHeaderWidget(
@@ -319,43 +247,6 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
             ),
           ),
 
-          // 3. Custom Compass (Image 2 mockup)
-          Positioned(
-            top: 100,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-              ),
-              child: const Column(
-                children: [
-                  Text(
-                    'N',
-                    style: TextStyle(
-                      color: Colors.red,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Icon(Icons.navigation, color: Colors.grey),
-                ],
-              ),
-            ),
-          ),
-
-          // 4. Custom Location Button (Image 2 mockup)
-          Positioned(
-            bottom: 120,
-            right: 20,
-            child: FloatingActionButton(
-              backgroundColor: Colors.white,
-              onPressed: () {}, // Center on tracked user
-              child: const Icon(Icons.gps_fixed, color: Colors.blueAccent),
-            ),
-          ),
-
-          // 5. Distance and ETA Card (Bottom Card - Widget Call)
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -366,20 +257,12 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
 
           AnimatedSlide(
             duration: const Duration(milliseconds: 350),
-            curve: Curves.easeOutCubic,
             offset: _isCompassHudActive ? Offset.zero : const Offset(0, 1),
-            child: IgnorePointer(
-              ignoring: !_isCompassHudActive,
-              child: CompassHudWidget(
-                distance: _distanceInMeters,
-                trackedName: _trackedName,
-                targetBearing: _targetBearing,
-                onBackToMap: () {
-                  setState(() {
-                    _isCompassHudActive = false;
-                  });
-                },
-              ),
+            child: CompassHudWidget(
+              distance: _distanceInMeters,
+              trackedName: _trackedName,
+              targetBearing: _targetBearing,
+              onBackToMap: () => setState(() => _isCompassHudActive = false),
             ),
           ),
         ],

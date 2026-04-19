@@ -39,6 +39,8 @@ dependencies:
   flutter_compass: ^0.8.0
   flutter_background_service: ^5.0.7 # Add this!
   device_info_plus: ^12.4.0 # Add this for device info
+  flutter_map: ^6.2.1 # Add this for map marker clustering
+  latlong2: ^0.9.1
 
 dev_dependencies:
   flutter_test:

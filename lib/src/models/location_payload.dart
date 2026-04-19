@@ -1,4 +1,4 @@
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:latlong2/latlong.dart'; // ✅ Changed from google_maps_flutter
 
 class LocationPayload {
   const LocationPayload({
@@ -8,23 +8,39 @@ class LocationPayload {
   });
 
   final String deviceId;
-  final LatLng position;
+  final LatLng position; // This now uses the latlong2 version
   final DateTime timestamp;
 
   factory LocationPayload.fromJson(Map<String, dynamic> json) {
+    // 1. Handle different key names from backend/Ably
     final dynamic rawLat = json['lat'] ?? json['latitude'];
     final dynamic rawLng = json['lng'] ?? json['longitude'];
     final dynamic rawTimestamp = json['timestamp'];
 
     return LocationPayload(
+      // 2. Ensure deviceId is never null
       deviceId: (json['deviceId'] ?? json['device_id'] ?? 'unknown').toString(),
+
+      // 3. Create the OSM-compatible LatLng
       position: LatLng(
-        (rawLat as num?)?.toDouble() ?? 0,
-        (rawLng as num?)?.toDouble() ?? 0,
+        (rawLat as num?)?.toDouble() ?? 0.0,
+        (rawLng as num?)?.toDouble() ?? 0.0,
       ),
-      timestamp: rawTimestamp is String
-          ? DateTime.tryParse(rawTimestamp) ?? DateTime.now()
-          : DateTime.now(),
+
+      // 4. Robust timestamp parsing
+      timestamp: _parseDateTime(rawTimestamp),
     );
+  }
+
+  static DateTime _parseDateTime(dynamic timestamp) {
+    if (timestamp == null) return DateTime.now();
+    if (timestamp is String) {
+      return DateTime.tryParse(timestamp) ?? DateTime.now();
+    }
+    if (timestamp is int) {
+      // Handles Unix timestamps if your backend sends them
+      return DateTime.fromMillisecondsSinceEpoch(timestamp);
+    }
+    return DateTime.now();
   }
 }
