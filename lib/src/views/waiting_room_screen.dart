@@ -40,43 +40,55 @@ class _WaitingRoomScreenState extends ConsumerState<WaitingRoomScreen> {
       await _ablyService.initAbly(widget.sessionCode, _myDeviceId!);
       await _ablyService.enterPresence(_myDeviceId!);
 
-      // Check who is already in the room (handles the case where
-      // one device joined before the other started listening)
-      final existing = await _ablyService.getPresentMembers();
-      for (final msg in existing) {
-        final name = msg.clientId ?? 'Unknown';
-        if (name != _myDeviceId && !_members.contains(name)) {
-          setState(() {
-            _members.add(name);
-            _friendJoined = true;
-          });
+      // Race condition handling: if session already started, redirect immediately.
+      if (!widget.isHost) {
+        final alreadyStarted = await _ablyService.hasSessionStarted();
+        if (alreadyStarted) {
+          _navigateToTracking();
+          return;
         }
       }
 
-      // Now listen for new arrivals / departures
+      // Populate the member list from presence snapshot.
+      final existingMembers = await _ablyService.getPresentMembers();
+      final members = existingMembers
+          .map((presence) => presence.clientId ?? 'Unknown')
+          .where((name) => name != _myDeviceId)
+          .toSet()
+          .toList();
+
+      setState(() {
+        _members = members;
+        _friendJoined = _members.isNotEmpty;
+      });
+
+      // Listen for live session state updates so guests can transition immediately.
+      _ablyService.subscribeToChannelMessages().listen((message) {
+        final data = message.data as Map?;
+        if (message.name == 'session_state' && data?['state'] == 'started') {
+          if (!widget.isHost) {
+            _navigateToTracking();
+          }
+        }
+      });
+
+      // Live presence updates: present/enter to add, leave to remove.
       _ablyService.subscribeToPresence((presenceMsg) {
         if (!mounted) return;
         final name = presenceMsg.clientId ?? 'Unknown';
-        if (name == _myDeviceId) return; // ignore ourselves
+        if (name == _myDeviceId) return;
 
         setState(() {
           if (presenceMsg.action == ably.PresenceAction.enter ||
               presenceMsg.action == ably.PresenceAction.present) {
             if (!_members.contains(name)) {
               _members.add(name);
-              _friendJoined = true;
             }
           } else if (presenceMsg.action == ably.PresenceAction.leave) {
             _members.remove(name);
-            _friendJoined = _members.isNotEmpty;
           }
+          _friendJoined = _members.isNotEmpty;
         });
-
-        // Guest auto-navigates when host (or anyone) is already present.
-        // Host stays and taps "Start Tracking" manually.
-        if (!widget.isHost && _friendJoined) {
-          _navigateToTracking();
-        }
       });
     } catch (e) {
       debugPrint("Ably Handshake Failed: $e");
@@ -85,6 +97,11 @@ class _WaitingRoomScreenState extends ConsumerState<WaitingRoomScreen> {
 
   void _navigateToTracking() {
     if (!mounted) return;
+
+    if (widget.isHost) {
+      _ablyService.publishSessionStarted();
+    }
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(

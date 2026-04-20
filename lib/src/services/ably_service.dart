@@ -40,10 +40,38 @@ class AblyService {
       print("Cannot publish: Ably channel not initialized");
       return;
     }
-    _channel?.publish(
+    _channel!.publish(
       name: 'location_update',
       data: {'lat': lat, 'lng': lng, 'deviceId': deviceId},
     );
+  }
+
+  void publishSessionStarted() {
+    if (_channel == null) {
+      print("Cannot publish: Ably channel not initialized");
+      return;
+    }
+
+    _channel!.publish(name: 'session_state', data: {'state': 'started'});
+  }
+
+  Future<bool> hasSessionStarted() async {
+    final history = await getChannelHistory(limit: 1);
+
+    if (history.items.isEmpty) return false;
+
+    final msg = history.items.first;
+    final data = msg.data as Map?;
+
+    return msg.name == 'session_state' && data?['state'] == 'started';
+  }
+
+  Stream<ably.Message> subscribeToChannelMessages() {
+    if (_channel == null) {
+      print("Warning: subscribeToChannelMessages called before channel ready.");
+      return const Stream.empty();
+    }
+    return _channel!.subscribe();
   }
 
   void subscribeToPresence(Function(ably.PresenceMessage) callback) {
@@ -54,6 +82,16 @@ class AblyService {
 
   Future<void> enterPresence(String deviceName) async {
     await _channel?.presence.enter(deviceName);
+  }
+
+  Future<ably.PaginatedResult<ably.Message>> getChannelHistory({
+    int limit = 1,
+  }) async {
+    if (_channel == null) throw Exception("Channel not ready");
+
+    return await _channel!.history(
+      ably.RealtimeHistoryParams(limit: limit), // ✅ correct for latest SDK
+    );
   }
 
   // Add this to get the initial list of people already in the room
