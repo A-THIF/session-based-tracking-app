@@ -1,183 +1,210 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart'; // Use latlong2, not latlong
+import 'package:latlong2/latlong.dart';
 import 'package:ably_flutter/ably_flutter.dart' as ably;
 
-// Hide LatLng from Google Maps to avoid conflicts
-import '../models/location_payload.dart';
 import '../services/ably_service.dart';
 import '../services/api_service.dart';
-import '../widgets/compass_hud_widget.dart';
-import '../widgets/stats_bottom_card_widget.dart';
+import '../widgets/proximity_info_widget.dart';
 import '../widgets/tracking_header_widget.dart';
+
+// International Error/Packet Constants
+const int _kPacketTimeoutMs = 7000;
 
 class TrackingScreen extends ConsumerStatefulWidget {
   final String sessionCode;
   final bool isHost;
+  final String myName;
+  final String? peerName;
 
   const TrackingScreen({
-    Key? key,
+    super.key,
     required this.sessionCode,
     required this.isHost,
-  }) : super(key: key);
+    this.myName = 'You',
+    this.peerName,
+  });
 
   @override
   ConsumerState<TrackingScreen> createState() => _TrackingScreenState();
 }
 
 class _TrackingScreenState extends ConsumerState<TrackingScreen> {
-  // OSM Map State
   final MapController _mapController = MapController();
-  List<LatLng> _polylineCoordinates = [];
+  final List<LatLng> _myPath = [];
+  final List<LatLng> _peerPath = [];
 
-  // Real-time State
-  late AblyService _ablyService;
+  late final AblyService _ablyService;
   final ApiService _apiService = ApiService();
-  StreamSubscription<Position>? _locationSubscription;
-  DateTime _lastPacketTime = DateTime.fromMillisecondsSinceEpoch(0);
 
-  Position? _myCurrentPos;
-  LatLng? _trackedUserPosition;
-  bool _isCompassHudActive = false;
-  double _distanceInMeters = 0;
-  double _targetBearing = 0;
+  StreamSubscription<Position>? _gpsSub;
+  StreamSubscription<ably.Message>? _ablySub;
+  Timer? _watchdog;
 
-  // UI State
-  String _trackedName = 'Liam';
-  String _distance = '0m';
-  String _eta = 'Calculating...';
+  Position? _myPosition;
+  LatLng? _peerPosition;
+  String? _myDeviceId;
+
+  String _distanceLabel = '—';
+  String _etaLabel = '—';
+  String _resolvedPeerName = 'Peer';
+
+  DateTime _lastPeerPacket = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _peerTimeout = false;
 
   @override
   void initState() {
     super.initState();
     _ablyService = ref.read(ablyServiceProvider);
+    _resolvedPeerName = widget.peerName ?? (widget.isHost ? 'Guest' : 'Host');
     _initializeTracking();
   }
 
   Future<void> _initializeTracking() async {
     try {
+      _myDeviceId = await _apiService.getDeviceId();
+
+      // 1. Fetch History from DB (Breadcrumbs)
       final details = await _apiService.getSessionDetails(widget.sessionCode);
       final List<dynamic> path = details['path'] ?? [];
-
       if (path.isNotEmpty) {
         setState(() {
-          _polylineCoordinates = path
-              .map((coords) => LatLng(coords['latitude'], coords['longitude']))
-              .toList();
+          _myPath.addAll(
+            path.map(
+              (c) => LatLng(
+                (c['latitude'] as num).toDouble(),
+                (c['longitude'] as num).toDouble(),
+              ),
+            ),
+          );
         });
       }
 
-      final String deviceId = await _apiService.getDeviceId();
-
-      if (widget.isHost) {
-        _startLocationTracking(deviceId: deviceId, publish: true);
-      } else {
-        _startLocationTracking();
-        _listenToLiveUpdates();
-      }
+      // 2. Start Bidirectional Streams
+      _startGpsPublisher();
+      _startPeerListener();
+      _startWatchdog();
     } catch (e) {
-      debugPrint('Error starting tracking: $e');
+      debugPrint('[Tracking] Initialization Failed: $e');
     }
   }
 
-  void _startLocationTracking({String? deviceId, bool publish = false}) {
-    _locationSubscription =
+  void _startGpsPublisher() {
+    _gpsSub =
         Geolocator.getPositionStream(
-          locationSettings:  AndroidSettings(
+          locationSettings: AndroidSettings(
             accuracy: LocationAccuracy.best,
-            distanceFilter: 10,
-            intervalDuration: Duration(seconds: 5),
+            intervalDuration: Duration(seconds: 3),
+            distanceFilter: 0,
           ),
-        ).listen((Position position) {
-          _myCurrentPos = position;
-          final myLatLng = LatLng(position.latitude, position.longitude);
+        ).listen((Position pos) {
+          _myPosition = pos;
+          final me = LatLng(pos.latitude, pos.longitude);
 
-          _refreshProximityState();
-
-          if (publish && deviceId != null) {
+          if (_myDeviceId != null) {
             _ablyService.publishLocation(
-              deviceId,
-              position.latitude,
-              position.longitude,
+              _myDeviceId!,
+              pos.latitude,
+              pos.longitude,
             );
           }
 
-          setState(() {
-            if (widget.isHost) {
-              _polylineCoordinates.add(myLatLng);
-            }
-          });
-          _mapController.move(myLatLng, _mapController.camera.zoom);
+          setState(() => _myPath.add(me));
+
+          // If we don't see the peer yet, just follow 'me'
+          if (_peerPosition == null) {
+            _mapController.move(me, _mapController.camera.zoom);
+          } else {
+            _fitBoth();
+          }
+          _recalcStats();
         });
   }
 
-  void _listenToLiveUpdates() {
-    _ablyService.getLocationStream().listen((ably.Message message) {
-      if (message.data == null) return;
+  void _startPeerListener() {
+    _ablySub = _ablyService.getLocationStream().listen((msg) {
+      if (msg.name != 'location_update' || msg.data == null) return;
 
-      try {
-        final payload = LocationPayload.fromJson(
-          Map<String, dynamic>.from(message.data as Map),
+      final raw = Map<String, dynamic>.from(msg.data as Map);
+      final String senderId = (raw['deviceId'] ?? '').toString();
+
+      // Filter out our own broadcast
+      if (senderId == _myDeviceId) return;
+
+      final peer = LatLng(
+        (raw['lat'] as num).toDouble(),
+        (raw['lng'] as num).toDouble(),
+      );
+      _lastPeerPacket = DateTime.now();
+
+      setState(() {
+        _peerPosition = peer;
+        _peerPath.add(peer);
+        _peerTimeout = false;
+      });
+
+      _fitBoth();
+      _recalcStats();
+    });
+  }
+
+  void _startWatchdog() {
+    _watchdog = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || _peerPosition == null) return;
+
+      final age = DateTime.now().difference(_lastPeerPacket).inMilliseconds;
+      if (age > _kPacketTimeoutMs && !_peerTimeout) {
+        setState(() => _peerTimeout = true);
+
+        // Structured Error Logging
+        debugPrint(
+          '{"type":"location-timeout", "session":"${widget.sessionCode}", "ageMs":$age}',
         );
-
-        if (payload.timestamp.isAfter(_lastPacketTime)) {
-          _lastPacketTime = payload.timestamp;
-
-          setState(() {
-            // Convert google_maps LatLng to latlong2 LatLng if models differ
-            _trackedUserPosition = LatLng(
-              payload.position.latitude,
-              payload.position.longitude,
-            );
-            _polylineCoordinates.add(_trackedUserPosition!);
-            _refreshProximityState();
-          });
-
-          _mapController.move(
-            _trackedUserPosition!,
-            _mapController.camera.zoom,
-          );
-        }
-      } catch (e) {
-        debugPrint("Payload Error: $e");
       }
     });
   }
 
-  void _refreshProximityState() {
-    if (_myCurrentPos == null || _trackedUserPosition == null) return;
+  void _fitBoth() {
+    if (_myPosition == null || _peerPosition == null) return;
+    final bounds = LatLngBounds.fromPoints([
+      LatLng(_myPosition!.latitude, _myPosition!.longitude),
+      _peerPosition!,
+    ]);
+    _mapController.fitCamera(
+      CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(70)),
+    );
+  }
 
-    _distanceInMeters = Geolocator.distanceBetween(
-      _myCurrentPos!.latitude,
-      _myCurrentPos!.longitude,
-      _trackedUserPosition!.latitude,
-      _trackedUserPosition!.longitude,
+  void _recalcStats() {
+    if (_myPosition == null || _peerPosition == null) return;
+
+    final dist = Geolocator.distanceBetween(
+      _myPosition!.latitude,
+      _myPosition!.longitude,
+      _peerPosition!.latitude,
+      _peerPosition!.longitude,
     );
 
-    _targetBearing = Geolocator.bearingBetween(
-      _myCurrentPos!.latitude,
-      _myCurrentPos!.longitude,
-      _trackedUserPosition!.latitude,
-      _trackedUserPosition!.longitude,
-    );
+    final etaSec = (dist / 1.4).round(); // Avg walking speed 1.4m/s
 
     setState(() {
-      _distance = _formatDistance(_distanceInMeters);
-      _isCompassHudActive = _distanceInMeters < 20;
+      _distanceLabel = dist >= 1000
+          ? '${(dist / 1000).toStringAsFixed(2)} km'
+          : '${dist.toStringAsFixed(0)} m';
+      _etaLabel = etaSec > 60
+          ? '${etaSec ~/ 60}m ${etaSec % 60}s'
+          : '${etaSec}s';
     });
   }
 
-  String _formatDistance(double meters) => meters >= 1000
-      ? '${(meters / 1000).toStringAsFixed(2)} km'
-      : '${meters.toStringAsFixed(0)}m';
-
   @override
   void dispose() {
-    _locationSubscription?.cancel();
+    _gpsSub?.cancel();
+    _ablySub?.cancel();
+    _watchdog?.cancel();
     super.dispose();
   }
 
@@ -186,10 +213,9 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. OPEN STREET MAP (OSM)
           FlutterMap(
             mapController: _mapController,
-            options: MapOptions(
+            options: const MapOptions(
               initialCenter: LatLng(13.0827, 80.2707),
               initialZoom: 15,
             ),
@@ -198,71 +224,99 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.session_based_tracking_app',
               ),
+              // Path Visuals
               PolylineLayer(
                 polylines: [
                   Polyline(
-                    points: _polylineCoordinates,
-                    color: const Color(0xFF5AB9EA),
+                    points: _myPath,
+                    color: const Color(0xFF4ECDC4),
+                    strokeWidth: 4,
+                  ),
+                  Polyline(
+                    points: _peerPath,
+                    color: const Color(0xFFFF8C42),
                     strokeWidth: 4,
                   ),
                 ],
               ),
+              // Markers
               MarkerLayer(
                 markers: [
-                  if (_myCurrentPos != null)
-                    Marker(
-                      point: LatLng(
-                        _myCurrentPos!.latitude,
-                        _myCurrentPos!.longitude,
-                      ),
-                      child: const Icon(
-                        Icons.my_location,
-                        color: Colors.green,
-                        size: 30,
-                      ),
+                  if (_myPosition != null)
+                    _buildUserMarker(
+                      LatLng(_myPosition!.latitude, _myPosition!.longitude),
+                      widget.myName,
+                      const Color(0xFF4ECDC4),
+                      Icons.navigation,
                     ),
-                  if (_trackedUserPosition != null)
-                    Marker(
-                      point: _trackedUserPosition!,
-                      child: const Icon(
-                        Icons.location_on,
-                        color: Colors.blue,
-                        size: 40,
-                      ),
+                  if (_peerPosition != null)
+                    _buildUserMarker(
+                      _peerPosition!,
+                      _resolvedPeerName,
+                      const Color(0xFFFF8C42),
+                      Icons.person_pin,
+                      isDimmed: _peerTimeout,
                     ),
                 ],
               ),
             ],
           ),
 
-          // UI Overlays (Header, Stats, Compass)
-          Align(
-            alignment: Alignment.topCenter,
-            child: TrackingHeaderWidget(
-              trackedName: _trackedName,
-              distance: _distance,
-            ),
+          TrackingHeaderWidget(
+            trackedName: _resolvedPeerName,
+            distance: _distanceLabel,
           ),
 
+          // Update this block in your TrackingScreen build method
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: StatsBottomCardWidget(distance: _distance, eta: _eta),
-            ),
-          ),
-
-          AnimatedSlide(
-            duration: const Duration(milliseconds: 350),
-            offset: _isCompassHudActive ? Offset.zero : const Offset(0, 1),
-            child: CompassHudWidget(
-              distance: _distanceInMeters,
-              trackedName: _trackedName,
-              targetBearing: _targetBearing,
-              onBackToMap: () => setState(() => _isCompassHudActive = false),
+              padding: const EdgeInsets.all(16),
+              child: ProximityInfoWidget(
+                distance: _distanceLabel,
+                eta: _etaLabel,
+                myName: widget.myName, // Changed from missing to widget.myName
+                peerName:
+                    _resolvedPeerName, // Changed from missing to _resolvedPeerName
+                peerConnected:
+                    !_peerTimeout, // Changed from isConnected to peerConnected
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Marker _buildUserMarker(
+    LatLng point,
+    String label,
+    Color color,
+    IconData icon, {
+    bool isDimmed = false,
+  }) {
+    return Marker(
+      point: point,
+      width: 60,
+      height: 70,
+      child: Opacity(
+        opacity: isDimmed ? 0.5 : 1.0,
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                label,
+                style: const TextStyle(color: Colors.white, fontSize: 10),
+              ),
+            ),
+            Icon(icon, color: color, size: 35),
+          ],
+        ),
       ),
     );
   }
