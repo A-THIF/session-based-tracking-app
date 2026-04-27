@@ -1,25 +1,40 @@
+// lib/src/services/ably_service.dart
+
 import 'package:ably_flutter/ably_flutter.dart' as ably;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api_service.dart';
 
-/// Single-channel session design:
-///   channel = 'session_{code}'
-///   Every message has [clientId] baked in by Ably (set during [initAbly]).
-///   No separate host/guest channels — clientId IS the identity.
 class AblyService {
   final ApiService _apiService = ApiService();
   ably.Realtime? _realtime;
   ably.RealtimeChannel? _channel;
 
-  bool get isInitialized => _channel != null;
+  bool get isInitialized => _channel != null && _realtime != null;
 
-  /// The clientId this instance was initialized with.
-  /// Exposed so TrackingScreen can filter out its own echoes.
   String? clientId;
+  String? _initializedSessionCode;
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // ── Init ────────────────────────────────────────────────────────────────
 
   Future<void> initAbly(String sessionCode, String deviceId) async {
+    // Guard: skip if already initialized for the same session + device
+    if (_channel != null &&
+        clientId == deviceId &&
+        _initializedSessionCode == sessionCode) {
+      print('[AblyService] Already initialized for $deviceId on $sessionCode, skipping.');
+      return;
+    }
+
+    // Dispose old connection before re-initializing
+    if (_realtime != null) {
+      print('[AblyService] Disposing old connection before re-init.');
+      _realtime!.close();
+      _realtime = null;
+      _channel = null;
+      clientId = null;
+      _initializedSessionCode = null;
+    }
+
     try {
       final tokenMap = await _apiService.getAblyToken(sessionCode);
       final String? tokenString = tokenMap['token'] as String?;
@@ -27,6 +42,7 @@ class AblyService {
       if (tokenString == null) throw Exception('Ably token is null from API');
 
       clientId = deviceId;
+      _initializedSessionCode = sessionCode;
 
       final opts = ably.ClientOptions();
       opts.tokenDetails = ably.TokenDetails(tokenString);
@@ -35,7 +51,6 @@ class AblyService {
       _realtime = ably.Realtime(options: opts);
       await _realtime!.connect();
 
-      // ONE private channel for the whole session.
       _channel = _realtime!.channels.get('session_$sessionCode');
 
       print('[AblyService] Connected as $deviceId on session_$sessionCode');
@@ -45,10 +60,8 @@ class AblyService {
     }
   }
 
-  // ── Location ──────────────────────────────────────────────────────────────
+  // ── Location ─────────────────────────────────────────────────────────────
 
-  /// Publishes this device's GPS position to the session channel.
-  /// Ably stamps the outgoing message with [clientId] automatically.
   void publishLocation(String deviceId, double lat, double lng) {
     if (_channel == null) {
       print('[AblyService] publishLocation: channel not ready');
@@ -60,11 +73,9 @@ class AblyService {
     );
   }
 
-  /// Stream of ALL location_update messages on the session channel.
-  /// Callers must filter out their own echoes using [clientId].
   Stream<ably.Message> getLocationStream() {
-    if (_channel == null) {
-      print('[AblyService] getLocationStream: channel not ready');
+    if (_realtime == null || _channel == null) {
+      print('[AblyService] Stream requested but channel not ready.');
       return const Stream.empty();
     }
     return _channel!.subscribe();
@@ -117,7 +128,15 @@ class AblyService {
 
   void dispose() {
     _realtime?.close();
+    _realtime = null;
+    _channel = null;
+    clientId = null;
+    _initializedSessionCode = null;
   }
 }
 
-final ablyServiceProvider = Provider<AblyService>((ref) => AblyService());
+final ablyServiceProvider = Provider<AblyService>((ref) {
+  final service = AblyService();
+  ref.onDispose(() => service.dispose());
+  return service;
+});

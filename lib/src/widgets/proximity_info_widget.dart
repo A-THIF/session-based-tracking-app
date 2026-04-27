@@ -1,23 +1,10 @@
 import 'package:flutter/material.dart';
 
-/// Bottom overlay card showing live distance + ETA between both session users.
-///
-/// Fully parameter-driven — zero hardcoded values.
-/// Used by [TrackingScreen]; pass updated values on every [setState].
 class ProximityInfoWidget extends StatelessWidget {
-  /// e.g. "320 m" or "1.24 km"
   final String distance;
-
-  /// e.g. "4m 12s" or "45s"
   final String eta;
-
-  /// Display name of this device's user (shown in legend)
   final String myName;
-
-  /// Display name of the peer (shown in legend + connection pill)
   final String peerName;
-
-  /// False when the watchdog has flagged a packet timeout.
   final bool peerConnected;
 
   const ProximityInfoWidget({
@@ -54,9 +41,8 @@ class ProximityInfoWidget extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── Connection pill ─────────────────────────────────────────────
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 350),
+          // ── Connection pill ──────────────────────────────────────────
+          Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
               color: peerConnected
@@ -67,8 +53,7 @@ class ProximityInfoWidget extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 350),
+                Container(
                   width: 8,
                   height: 8,
                   decoration: BoxDecoration(
@@ -79,17 +64,20 @@ class ProximityInfoWidget extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 6),
-                Text(
-                  peerConnected
-                      ? '$peerName is live'
-                      : '$peerName — no signal (>7s)',
-                  style: TextStyle(
-                    color: peerConnected
-                        ? const Color(0xFF00E676)
-                        : Colors.redAccent,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
+                Flexible(
+                  child: Text(
+                    peerConnected
+                        ? '$peerName is live'
+                        : '$peerName — no signal (>7s)',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: peerConnected
+                          ? const Color(0xFF00E676)
+                          : Colors.redAccent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.3,
+                    ),
                   ),
                 ),
               ],
@@ -100,7 +88,7 @@ class ProximityInfoWidget extends StatelessWidget {
           const Divider(color: Color(0xFF1E3A5F), height: 1),
           const SizedBox(height: 14),
 
-          // ── Distance + ETA ───────────────────────────────────────────────
+          // ── Distance + ETA ───────────────────────────────────────────
           Row(
             children: [
               Expanded(
@@ -132,13 +120,23 @@ class ProximityInfoWidget extends StatelessWidget {
           const Divider(color: Color(0xFF1E3A5F), height: 1),
           const SizedBox(height: 10),
 
-          // ── Trail legend ─────────────────────────────────────────────────
+          // ── Legend ───────────────────────────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _LegendItem(color: const Color(0xFF4ECDC4), label: myName),
-              const SizedBox(width: 24),
-              _LegendItem(color: const Color(0xFFFF8C42), label: peerName),
+              Flexible(
+                child: _LegendItem(
+                  color: const Color(0xFF4ECDC4),
+                  label: myName,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Flexible(
+                child: _LegendItem(
+                  color: const Color(0xFFFF8C42),
+                  label: peerName,
+                ),
+              ),
             ],
           ),
         ],
@@ -203,7 +201,7 @@ class _LegendItem extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 28,
+          width: 24,
           height: 4,
           decoration: BoxDecoration(
             color: color,
@@ -211,12 +209,15 @@ class _LegendItem extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 6),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Color(0xFF7A9BC0),
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
+        Flexible(
+          child: Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF7A9BC0),
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
       ],

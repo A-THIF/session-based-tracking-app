@@ -1,3 +1,9 @@
+// lib/src/widgets/tracking_header_widget.dart
+//
+// Top overlay bar on TrackingScreen.
+// Dark blue theme matching the rest of the app.
+// Format: TRACKING: [PEER_NAME] ([DISTANCE])
+
 import 'package:flutter/material.dart';
 
 class TrackingHeaderWidget extends StatelessWidget {
@@ -5,45 +11,69 @@ class TrackingHeaderWidget extends StatelessWidget {
   final String distance;
 
   const TrackingHeaderWidget({
-    Key? key,
+    super.key,
     required this.trackedName,
     required this.distance,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.only(top: 20.0),
+        padding: const EdgeInsets.only(top: 12),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 25),
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(30),
-            boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)],
-          ),
-          child: RichText(
-            text: TextSpan(
-              style: const TextStyle(
-                color: Colors.black,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFF1E3A5F), width: 1),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black45,
+                blurRadius: 16,
+                offset: Offset(0, 4),
               ),
-              children: [
-                const TextSpan(text: 'TRACKING: '),
-                TextSpan(
-                  text: trackedName.toUpperCase(),
-                  style: const TextStyle(color: Color(0xFF5AB9EA)),
-                ),
-                TextSpan(
-                  text: ' ($distance)',
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontWeight: FontWeight.normal,
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.navigation_rounded,
+                color: Color(0xFF4ECDC4),
+                size: 16,
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: RichText(
+                  overflow: TextOverflow.ellipsis,
+                  text: TextSpan(
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5,
+                    ),
+                    children: [
+                      const TextSpan(
+                        text: 'TRACKING: ',
+                        style: TextStyle(color: Color(0xFF7A9BC0)),
+                      ),
+                      TextSpan(
+                        text: trackedName.toUpperCase(),
+                        style: const TextStyle(color: Color(0xFF5AB9EA)),
+                      ),
+                      TextSpan(
+                        text: '  $distance',
+                        style: const TextStyle(
+                          color: Color(0xFF4ECDC4),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

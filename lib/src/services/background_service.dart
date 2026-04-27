@@ -1,3 +1,4 @@
+import 'dart:async'; // ✅ REQUIRED
 import 'dart:ui';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
@@ -10,7 +11,7 @@ Future<void> initializeService() async {
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
-      autoStart: false, // Start manually when session begins
+      autoStart: false,
       isForegroundMode: true,
       notificationChannelId: 'trace_foreground',
       initialNotificationTitle: 'Trace Active',
@@ -24,29 +25,77 @@ Future<void> initializeService() async {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
-  final ably = AblyService(); // This is a NEW instance for the background
 
+  final ably = AblyService();
+
+  StreamSubscription<Position>? positionSub;
+  bool isInitialized = false;
+
+  /// ▶️ START TRACKING
   service.on('startTracking').listen((event) async {
     final sessionCode = event?['sessionCode'];
     final deviceId = event?['deviceId'];
 
     if (sessionCode == null || deviceId == null) return;
 
-    // IMPORTANT: You must re-initialize with the session code in the background
-    await ably.initAbly(sessionCode, deviceId);
+    // 🧹 Prevent duplicate listeners
+    await positionSub?.cancel();
 
-    Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 10,
-        foregroundNotificationConfig: ForegroundNotificationConfig(
-          notificationText: "Trace is sharing your location live",
-          notificationTitle: "Running in Background",
-          enableWakeLock: true,
-        ),
-      ),
-    ).listen((position) {
-      ably.publishLocation(deviceId, position.latitude, position.longitude);
-    });
+    // 🔌 Initialize Ably only once
+    if (!isInitialized) {
+      await ably.initAbly(sessionCode, deviceId);
+      isInitialized = true;
+    }
+
+    // 🔐 Ensure permissions
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      service.stopSelf(); // ❗ stop useless service
+      return;
+    }
+
+    // 📍 Start location stream
+    positionSub =
+        Geolocator.getPositionStream(
+          locationSettings: AndroidSettings(
+            accuracy: LocationAccuracy.best,
+            distanceFilter: 5,
+            foregroundNotificationConfig: ForegroundNotificationConfig(
+              notificationText: "Trace is sharing your location live",
+              notificationTitle: "Background Tracking Active",
+              enableWakeLock: true,
+            ),
+          ),
+        ).listen(
+          (position) {
+            ably.publishLocation(
+              deviceId,
+              position.latitude,
+              position.longitude,
+            );
+          },
+          onError: (error) {
+            // ⚠️ Optional: log / retry logic
+            // print("Location stream error: $error");
+          },
+        );
+  });
+
+  /// 🛑 STOP TRACKING
+  service.on('stopTracking').listen((event) async {
+    await positionSub?.cancel();
+    positionSub = null;
+  });
+
+  /// 💀 FULL SERVICE STOP (app kill / manual stop)
+  service.on('stopService').listen((event) async {
+    await positionSub?.cancel();
+    positionSub = null;
+    service.stopSelf();
   });
 }

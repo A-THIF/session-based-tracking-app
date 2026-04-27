@@ -1,9 +1,14 @@
+// lib/src/views/home_screen.dart
+//
+// Community 1 (Home): delegates all logic to SessionNotifier.
+// Widget classes live in lib/src/widgets/session_cards.dart.
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../models/session_model.dart';
-import '../services/api_service.dart';
-import 'waiting_room_screen.dart';
+import '../providers/session_provider.dart';
 import '../widgets/permission_guard.dart';
+import '../widgets/session_cards.dart';
+import 'waiting_room_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -14,216 +19,147 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   final TextEditingController _codeController = TextEditingController();
-  final ApiService _apiService = ApiService();
-  bool _isLoading = false;
-  String _statusMessage = 'Waiting to connect...';
 
-  // --- Logic for User A (Start Session) ---
-  Future<void> _handleStartSession() async {
-    final hasPermission = await PermissionGuard.checkSettings(context);
-    if (!hasPermission) return;
-    setState(() {
-      _isLoading = true;
-      _statusMessage = 'Creating session...';
-    });
-
-    try {
-      // 1. Call your Render API (default 60 min duration)
-      final sessionData = await _apiService.createSession(60);
-      final String code = sessionData['sessionCode'];
-
-      // 2. Navigate to Waiting Room
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) =>
-              WaitingRoomScreen(sessionCode: code, isHost: true),
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Failed to create session')));
-    } finally {
-      setState(() {
-        _isLoading = false;
-        _statusMessage = 'Waiting to connect...';
-      });
-    }
+  @override
+  void dispose() {
+    _codeController.dispose();
+    super.dispose();
   }
 
-  // --- Logic for User B (Join Session) ---
-  Future<void> _handleJoinSession() async {
-    final String code = _codeController.text.trim().toUpperCase();
-    if (code.isEmpty || code.length != 6) return;
-
-    // 1. Check Permissions
+  Future<void> _onStartSession() async {
     final hasPermission = await PermissionGuard.checkSettings(context);
-    if (!hasPermission) return;
+    if (!hasPermission || !mounted) return;
+    ref.read(sessionProvider.notifier).startNewSession();
+  }
 
-    setState(() {
-      _isLoading = true;
-      _statusMessage = 'Joining...';
-    });
-
-    try {
-      // 2. Get the real unique Device ID from our Service
-      final String deviceId = await _apiService.getDeviceId();
-
-      // 3. Join the session using that ID
-      final Session session = await _apiService.joinSession(code, deviceId);
-
-      // 4. Navigate to Waiting Room
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) =>
-              WaitingRoomScreen(sessionCode: session.code, isHost: false),
-        ),
-      );
-    } catch (e) {
-      debugPrint("Join Error: $e");
+  Future<void> _onJoinSession() async {
+    final code = _codeController.text.trim().toUpperCase();
+    if (code.isEmpty || code.length != 6) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid code or expired session')),
+        const SnackBar(content: Text('Enter a valid 6-character code')),
       );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _statusMessage = 'Waiting to connect...';
-        });
-      }
+      return;
     }
+    final hasPermission = await PermissionGuard.checkSettings(context);
+    if (!hasPermission || !mounted) return;
+    ref.read(sessionProvider.notifier).joinSession(code);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text('TRACE', style: TextStyle(color: Colors.white)),
-        backgroundColor: const Color(0xFF132036), // Dark Blue from mockup
-        leading: const CircleAvatar(
-          backgroundImage: NetworkImage('https://i.pravatar.cc/150?img=1'),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.history, color: Colors.white),
-            onPressed: () {},
+    final session = ref.watch(sessionProvider);
+    final isLoading = session.status == SessionStatus.loading;
+
+    ref.listen<SessionState>(sessionProvider, (previous, next) {
+      if (next.status == SessionStatus.waiting && next.session != null) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const WaitingRoomScreen()),
+        );
+      }
+      if (next.status == SessionStatus.error && next.errorMessage != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF1E3A5F),
+            content: Text(
+              next.errorMessage!,
+              style: const TextStyle(color: Colors.redAccent),
+            ),
           ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
+        );
+      }
+    });
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 1. Large "Start New Session" Button Card
-              if (_isLoading)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 50.0),
-                  child: CircularProgressIndicator(),
-                )
-              else
-                GestureDetector(
-                  onTap: _handleStartSession,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 40,
-                      horizontal: 20,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF5AB9EA), // Blue from mockup
-                      borderRadius: BorderRadius.circular(30),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 10,
-                          offset: Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      children: [
-                        const Icon(
-                          Icons.add_circle_outline,
-                          size: 70,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(height: 20),
-                        const Text(
-                          'START NEW SESSION',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              const SizedBox(height: 24),
 
-              const SizedBox(height: 30),
-
-              // 2. Join Session Row Card
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.black12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black12,
-                      blurRadius: 10,
-                      offset: Offset(0, 5),
-                    ),
-                  ],
-                ),
-                child: Row(
+              // ── Logo / Title ───────────────────────────────────────────
+              Center(
+                child: Column(
                   children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _codeController,
-                        textCapitalization: TextCapitalization.characters,
-                        decoration: const InputDecoration(
-                          hintText: 'ENTER JOIN CODE',
-                          border: OutlineInputBorder(),
-                        ),
+                    Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E3A5F),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF5AB9EA).withValues(alpha: 0.3),
+                            blurRadius: 24,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.radar,
+                        color: Color(0xFF5AB9EA),
+                        size: 44,
                       ),
                     ),
-                    const SizedBox(width: 15),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF5AB9EA),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 30,
-                          vertical: 15,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15),
-                        ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'TRACE',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 38,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 8,
                       ),
-                      onPressed: _handleJoinSession,
-                      child: const Text(
-                        'JOIN',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Real-time session tracking',
+                      style: TextStyle(
+                        color: Color(0xFF7A9BC0),
+                        fontSize: 13,
+                        letterSpacing: 1.2,
                       ),
                     ),
                   ],
                 ),
               ),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 56),
 
-              // 3. Status Message
-              Text(_statusMessage, style: const TextStyle(color: Colors.grey)),
+              // ── START SESSION card ─────────────────────────────────────
+              ActionCard(
+                icon: Icons.add_location_alt_rounded,
+                iconColor: const Color(0xFF4ECDC4),
+                accentColor: const Color(0xFF4ECDC4),
+                title: 'Start a Session',
+                subtitle: 'Create a new tracking session\nand share the code',
+                onTap: isLoading ? null : _onStartSession,
+                isLoading: isLoading,
+              ),
+
+              const SizedBox(height: 16),
+
+              // ── JOIN SESSION card ──────────────────────────────────────
+              JoinCard(
+                controller: _codeController,
+                onJoin: isLoading ? null : _onJoinSession,
+                isLoading: isLoading,
+              ),
+
+              const SizedBox(height: 40),
+
+              // ── Footer ─────────────────────────────────────────────────
+              const Center(
+                child: Text(
+                  'Both users must be on the same session code',
+                  style: TextStyle(color: Color(0xFF3D5A80), fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              const SizedBox(height: 16),
             ],
           ),
         ),
