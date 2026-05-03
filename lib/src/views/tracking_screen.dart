@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -10,6 +9,7 @@ import '../widgets/proximity_info_widget.dart';
 import '../widgets/tracking_header_widget.dart';
 import '../widgets/end_session_button.dart';
 import '../widgets/recenter_fab.dart';
+import '../widgets/route_polyline_widget.dart'; // Adjust name if needed
 
 class TrackingScreen extends ConsumerStatefulWidget {
   const TrackingScreen({super.key});
@@ -151,82 +151,85 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
             body: Stack(
               children: [
                 // ── Map ────────────────────────────────────────────────
-                FlutterMap(
-                  mapController: _mapController,
-                  options: MapOptions(
-                    initialCenter: data.myPos ?? const LatLng(13.0827, 80.2707),
-                    initialZoom: 16,
-                    onPositionChanged: (position, hasGesture) {
-                      if (hasGesture && _isAutoFollow) {
-                        setState(() => _isAutoFollow = false);
-                      }
-                    },
-                  ),
-                  children: [
-                    TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName:
-                          'com.example.session_based_tracking_app',
-                    ),
-                    MarkerLayer(
-                      markers: [
-                        if (data.myPos != null)
-                          Marker(
-                            point: data.myPos!,
-                            width: 44,
-                            height: 44,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: const Color(
-                                  0xFF4ECDC4,
-                                ).withValues(alpha: 0.2),
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: const Color(0xFF4ECDC4),
-                                  width: 2,
-                                ),
-                              ),
-                              child: const Icon(
-                                Icons.my_location_rounded,
-                                color: Color(0xFF4ECDC4),
-                                size: 22,
-                              ),
-                            ),
-                          ),
-                        if (data.peerPos != null)
-                          Marker(
-                            point: data.peerPos!,
-                            width: 44,
-                            height: 44,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: data.isPeerTimeout
-                                    ? Colors.redAccent.withValues(alpha: 0.15)
-                                    : const Color(
-                                        0xFFFF8C42,
-                                      ).withValues(alpha: 0.2),
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: data.isPeerTimeout
-                                      ? Colors.redAccent
-                                      : const Color(0xFFFF8C42),
-                                  width: 2,
-                                ),
-                              ),
-                              child: Icon(
-                                Icons.person_pin_circle_rounded,
-                                color: data.isPeerTimeout
-                                    ? Colors.redAccent
-                                    : const Color(0xFFFF8C42),
-                                size: 22,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
+                // Make sure to import your new widget at the top
+// import '../widgets/route_line_widget.dart';
+
+FlutterMap(
+  mapController: _mapController,
+  options: MapOptions(
+    initialCenter: data.myPos ?? const LatLng(13.0827, 80.2707),
+    initialZoom: 16,
+    onPositionChanged: (position, hasGesture) {
+      if (hasGesture && _isAutoFollow) {
+        setState(() => _isAutoFollow = false);
+      }
+    },
+  ),
+  children: [
+    // 1. Base Map Tiles
+    TileLayer(
+      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      userAgentPackageName: 'com.example.session_based_tracking_app',
+    ),
+
+    // 2. The Road Path (New Widget)
+    RouteLineWidget(routePoints: data.routePoints),
+
+    // 3. User Markers
+    MarkerLayer(
+      markers: [
+        if (data.myPos != null)
+          Marker(
+            point: data.myPos!,
+            width: 44,
+            height: 44,
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF4ECDC4).withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: const Color(0xFF4ECDC4),
+                  width: 2,
                 ),
+              ),
+              child: const Icon(
+                Icons.my_location_rounded,
+                color: Color(0xFF4ECDC4),
+                size: 22,
+              ),
+            ),
+          ),
+        if (data.peerPos != null)
+          Marker(
+            point: data.peerPos!,
+            width: 44,
+            height: 44,
+            child: Container(
+              decoration: BoxDecoration(
+                color: data.isPeerTimeout
+                    ? Colors.redAccent.withValues(alpha: 0.15)
+                    : const Color(0xFFFF8C42).withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: data.isPeerTimeout
+                      ? Colors.redAccent
+                      : const Color(0xFFFF8C42),
+                  width: 2,
+                ),
+              ),
+              child: Icon(
+                Icons.person_pin_circle_rounded,
+                color: data.isPeerTimeout
+                    ? Colors.redAccent
+                    : const Color(0xFFFF8C42),
+                size: 22,
+              ),
+            ),
+          ),
+      ],
+    ),
+  ],
+),
 
                 // ── Header with End Session button ─────────────────────
                 Positioned(

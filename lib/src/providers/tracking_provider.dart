@@ -1,21 +1,22 @@
 // lib/src/providers/tracking_provider.dart
 
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import '../services/ably_service.dart';
+import '../services/routing_service.dart';
 import 'session_provider.dart';
 
 const int _kPacketTimeoutMs = 7000;
-
-// ── Data class ────────────────────────────────────────────────────────────────
 
 class TrackingData {
   final LatLng? myPos;
   final LatLng? peerPos;
   final List<LatLng> myPath;
   final List<LatLng> peerPath;
+  final List<LatLng> routePoints;
   final String distanceLabel;
   final String etaLabel;
   final bool isPeerTimeout;
@@ -25,6 +26,7 @@ class TrackingData {
     this.peerPos,
     this.myPath = const [],
     this.peerPath = const [],
+    this.routePoints = const [],
     this.distanceLabel = '—',
     this.etaLabel = '—',
     this.isPeerTimeout = false,
@@ -35,6 +37,7 @@ class TrackingData {
     LatLng? peerPos,
     List<LatLng>? myPath,
     List<LatLng>? peerPath,
+    List<LatLng>? routePoints,
     String? distanceLabel,
     String? etaLabel,
     bool? isPeerTimeout,
@@ -44,6 +47,7 @@ class TrackingData {
       peerPos: peerPos ?? this.peerPos,
       myPath: myPath ?? this.myPath,
       peerPath: peerPath ?? this.peerPath,
+      routePoints: routePoints ?? this.routePoints,
       distanceLabel: distanceLabel ?? this.distanceLabel,
       etaLabel: etaLabel ?? this.etaLabel,
       isPeerTimeout: isPeerTimeout ?? this.isPeerTimeout,
@@ -51,21 +55,23 @@ class TrackingData {
   }
 }
 
-// ── Notifier ──────────────────────────────────────────────────────────────────
-
 class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
   StreamSubscription<Position>? _gpsSub;
   StreamSubscription? _ablySub;
   Timer? _watchdog;
-  bool _started = false; // 🔥 guard against double-build
+  bool _started = false;
 
+  final RoutingService _routingService = RoutingService();
+
+  DateTime? _lastRouteFetch;
+  LatLng? _lastRoutePos;
+  String? _currentSessionCode;
   DateTime _lastPeerPacket = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   Future<TrackingData> build() async {
     ref.onDispose(_dispose);
 
-    // 🔥 Use read() — not watch() — so presence list updates don't rebuild this
     final session = ref.read(sessionProvider);
 
     if (session.status != SessionStatus.tracking ||
@@ -74,16 +80,16 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
       return const TrackingData();
     }
 
-    // 🔥 Guard: only start once per provider lifetime
     if (_started) {
-      print('[LiveTracking] Already started, skipping duplicate build.');
+      debugPrint('[LiveTracking] Already started, skipping duplicate build.');
       return state.valueOrNull ?? const TrackingData();
     }
+
     _started = true;
+    _currentSessionCode = session.session!.code;
 
     final ablyService = ref.read(ablyServiceProvider);
 
-    // Wait for Ably to be ready (initialized by SessionNotifier)
     int retry = 0;
     while (!ablyService.isInitialized && retry < 20) {
       await Future.delayed(const Duration(milliseconds: 300));
@@ -91,24 +97,21 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     }
 
     if (!ablyService.isInitialized) {
-      print('[LiveTracking] Ably never initialized after ${retry * 300}ms');
+      debugPrint('[LiveTracking] Ably never initialized');
       return const TrackingData();
     }
 
-    print('[LiveTracking] Ably ready, starting tracking...');
+    debugPrint('[LiveTracking] Ably ready, starting tracking...');
 
     final myDeviceId = session.deviceId!;
-    final sessionCode = session.session!.code;
-    final initialPaths = await _loadHistory(sessionCode);
+    final initialPaths = await _loadHistory(_currentSessionCode!);
 
     _startGpsPublisher(ablyService, myDeviceId);
     _startPeerListener(ablyService, myDeviceId);
-    _startWatchdog(sessionCode);
+    _startWatchdog(_currentSessionCode!);
 
     return TrackingData(myPath: initialPaths.$1, peerPath: initialPaths.$2);
   }
-
-  // ── 1. GPS publisher ──────────────────────────────────────────────────────
 
   void _startGpsPublisher(AblyService ablyService, String myDeviceId) {
     _gpsSub =
@@ -129,10 +132,8 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
         });
   }
 
-  // ── 2. Peer listener ──────────────────────────────────────────────────────
-
   void _startPeerListener(AblyService ablyService, String myDeviceId) {
-    print('[LiveTracking] Starting peer listener, my ID = $myDeviceId');
+    debugPrint('[LiveTracking] Starting peer listener');
 
     _ablySub = ablyService.getLocationStream().listen(
       (msg) {
@@ -141,7 +142,6 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
         final raw = Map<String, dynamic>.from(msg.data as Map);
         final senderId = (raw['deviceId'] ?? '').toString();
 
-        // 🚫 Remove echo
         if (senderId == myDeviceId) return;
 
         final peer = LatLng(
@@ -153,35 +153,71 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
 
         final current = state.valueOrNull ?? const TrackingData();
 
+        if (_currentSessionCode != null) {
+          _maybeUpdateRoute(current.myPos, peer);
+        }
+
         state = AsyncData(
           _recalc(current.copyWith(peerPos: peer, isPeerTimeout: false)),
         );
+
+        debugPrint('[LiveTracking] Peer updated: $senderId');
       },
       onError: (err) {
-        print('[PeerListener] Stream error: $err');
+        debugPrint('[PeerListener] Stream error: $err');
       },
     );
   }
 
-  // ── 3. Watchdog ───────────────────────────────────────────────────────────
-
   void _startWatchdog(String sessionCode) {
     _watchdog = Timer.periodic(const Duration(seconds: 5), (_) {
       final current = state.valueOrNull;
+
       if (current == null || current.peerPos == null) return;
 
       final ageMs = DateTime.now().difference(_lastPeerPacket).inMilliseconds;
 
       if (ageMs > _kPacketTimeoutMs && !current.isPeerTimeout) {
-        print(
+        debugPrint(
           '{"type":"location-timeout","session":"$sessionCode","ageMs":$ageMs}',
         );
+
         state = AsyncData(current.copyWith(isPeerTimeout: true));
       }
     });
   }
 
-  // ── Distance + ETA ────────────────────────────────────────────────────────
+  void _maybeUpdateRoute(LatLng? myPos, LatLng peerPos) async {
+    if (myPos == null) return;
+
+    final now = DateTime.now();
+
+    double distanceMoved = 0;
+
+    if (_lastRoutePos != null) {
+      distanceMoved = Geolocator.distanceBetween(
+        _lastRoutePos!.latitude,
+        _lastRoutePos!.longitude,
+        myPos.latitude,
+        myPos.longitude,
+      );
+    }
+
+    if (_lastRouteFetch == null ||
+        (now.difference(_lastRouteFetch!).inSeconds > 60 &&
+            distanceMoved > 200)) {
+      _lastRouteFetch = now;
+      _lastRoutePos = myPos;
+
+      try {
+        final points = await _routingService.getWaterfallRoute(myPos, peerPos);
+
+        state = AsyncData(state.value!.copyWith(routePoints: points));
+      } catch (e) {
+        debugPrint('[Routing] Error: $e');
+      }
+    }
+  }
 
   TrackingData _recalc(TrackingData data) {
     if (data.myPos == null || data.peerPos == null) return data;
@@ -206,14 +242,14 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     return data.copyWith(distanceLabel: distLabel, etaLabel: etaLabel);
   }
 
-  // ── History seed ──────────────────────────────────────────────────────────
-
   Future<(List<LatLng>, List<LatLng>)> _loadHistory(String code) async {
     try {
       final details = await ref
           .read(sessionProvider.notifier)
           .loadSessionDetails(code);
+
       final List<dynamic> path = details['path'] ?? [];
+
       final myPath = path
           .map(
             (c) => LatLng(
@@ -222,6 +258,7 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
             ),
           )
           .toList();
+
       return (myPath, <LatLng>[]);
     } catch (_) {
       return (<LatLng>[], <LatLng>[]);

@@ -41,6 +41,7 @@ dependencies:
   device_info_plus: ^12.4.0 # Add this for device info
   flutter_map: ^6.2.1 # Add this for map marker clustering
   latlong2: ^0.9.1
+  google_polyline_algorithm: ^3.1.0
 
 dev_dependencies:
   flutter_test:
@@ -63,6 +64,7 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  
 
   # To add assets to your application, add an assets section, like this:
   # assets:

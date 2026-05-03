@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class RadarAnimationWidget extends StatefulWidget {
-  const RadarAnimationWidget({Key? key}) : super(key: key);
+  const RadarAnimationWidget({super.key});
 
   @override
   State<RadarAnimationWidget> createState() => _RadarAnimationWidgetState();

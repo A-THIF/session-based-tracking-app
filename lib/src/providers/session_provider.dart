@@ -73,11 +73,14 @@ class SessionNotifier extends StateNotifier<SessionState> {
       );
       await _initAbly(session.code, id);
     } catch (e) {
-      state = state.copyWith(
-        status: SessionStatus.error,
-        errorMessage: e.toString(),
-      );
-    }
+    // 🔴 SEND TO RENDER LOGS
+    _api.sendRemoteLog("SESSION_CREATE_FAIL", "N/A", e.toString());
+    
+    state = state.copyWith(
+      status: SessionStatus.error,
+      errorMessage: e.toString(),
+    );
+  }
   }
 
   Future<void> joinSession(String code) async {

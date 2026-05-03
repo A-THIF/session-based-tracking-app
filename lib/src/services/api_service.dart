@@ -1,12 +1,12 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import '../constants/app_constants.dart';
+import '../config/constants.dart';
 import '../models/session_model.dart';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 
 class ApiService {
-  final String _baseUrl = AppConstants.baseUrl;
+  final String _baseUrl = AppConfig.baseUrl;
   final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
 
   Future<String> getDeviceId() async {
@@ -29,13 +29,22 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> createSession(int duration) async {
-    final response = await http.post(
-      Uri.parse('$_baseUrl/session/create'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'duration': duration}),
-    );
-    return jsonDecode(response.body);
-  }
+  final url = '$_baseUrl/session/create';
+
+  print("🚀 POST $url");
+  print("📦 duration: $duration");
+
+  final response = await http.post(
+    Uri.parse(url),
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode({'duration': duration}),
+  );
+
+  print("✅ STATUS: ${response.statusCode}");
+  print("📨 BODY: ${response.body}");
+
+  return jsonDecode(response.body);
+}
 
   Future<Session> joinSession(String code, String deviceId) async {
     final response = await http.post(
@@ -51,6 +60,28 @@ class ApiService {
       throw Exception(data['error'] ?? 'Join failed');
     }
   }
+
+  // lib/src/services/api_service.dart
+
+Future<void> sendRemoteLog(String event, String sessionId, String message) async {
+  final url = '$_baseUrl/audit/log';
+  try {
+    await http.post(
+      Uri.parse(url),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'event': event,
+        'session': sessionId,
+        'message': message,
+        'device': await getDeviceId(),
+        'timestamp': DateTime.now().toIso8601String(),
+      }),
+    );
+  } catch (e) {
+    // If the logging fails, we don't want to crash the app
+    print("Remote log failed: $e");
+  }
+}
 
   Future<Map<String, dynamic>> getSessionDetails(String code) async {
     final response = await http.get(Uri.parse('$_baseUrl/session/$code'));

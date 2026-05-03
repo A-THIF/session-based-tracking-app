@@ -48,3 +48,4 @@ app.*.map.json
 graphify-out/
 .graphify/
 GRAPH_REPORT.md
+.env
