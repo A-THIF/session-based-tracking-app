@@ -42,10 +42,13 @@ dependencies:
   flutter_map: ^6.2.1 # Add this for map marker clustering
   latlong2: ^0.9.1
   google_polyline_algorithm: ^3.1.0
+  envied: ^0.5.4+1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  envied_generator: ^0.5.4+1
+  build_runner: ^2.4.13
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

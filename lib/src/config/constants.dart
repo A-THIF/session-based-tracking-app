@@ -1,10 +1,12 @@
+// lib/src/config/constants.dart
+import 'env.dart';
+
 class AppConfig {
-  static const String baseUrl = String.fromEnvironment('BACKEND_URL');
+  // Pulls from the obfuscated Envied class
+  static final String baseUrl = Env.backendUrl;
 
-  static const String stadiaKey = String.fromEnvironment('STADIA_API_KEY');
-
-  static const String orsKey = String.fromEnvironment('ORS_API_KEY');
-
+  // These are now handled in the BACKEND, so we can remove the keys from here
+  // Keeping the logic constants
   static const int routeUpdateIntervalSeconds = 60;
   static const int routeUpdateDistanceMeters = 200;
 }

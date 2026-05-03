@@ -49,3 +49,4 @@ graphify-out/
 .graphify/
 GRAPH_REPORT.md
 .env
+lib/src/config/env.g.dart

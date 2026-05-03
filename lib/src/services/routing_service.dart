@@ -36,7 +36,7 @@ class RoutingService {
       }
     } catch (e) {
       // If the backend fails, we log it locally for debugging
-      debugPrint("Routing error: $e");
+      print("Routing error: $e");
     }
 
     // Final fallback: Return a straight line between the two users
