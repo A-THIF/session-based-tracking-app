@@ -9,12 +9,12 @@ class CompassHudWidget extends StatelessWidget {
   final VoidCallback onBackToMap;
 
   const CompassHudWidget({
-    Key? key,
+    super.key,
     required this.distance,
     required this.trackedName,
     required this.targetBearing,
     required this.onBackToMap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

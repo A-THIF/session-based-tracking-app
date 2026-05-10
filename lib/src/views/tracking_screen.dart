@@ -10,6 +10,7 @@ import '../widgets/tracking_header_widget.dart';
 import '../widgets/end_session_button.dart';
 import '../widgets/recenter_fab.dart';
 import '../widgets/route_polyline_widget.dart'; // Adjust name if needed
+import '../widgets/compass_hud_widget.dart';
 
 class TrackingScreen extends ConsumerStatefulWidget {
   const TrackingScreen({super.key});
@@ -105,11 +106,16 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
 
     return PopScope(
       canPop: false,
+      // Change this in TrackingScreen's build method
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
+
+        // Guard the context use
+        final navigator = Navigator.of(context);
+
         final shouldPop = await _onWillPop();
         if (shouldPop && mounted) {
-          Navigator.of(context).pop();
+          navigator.pop();
         }
       },
       child: trackingAsync.when(
@@ -129,6 +135,7 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
             ),
           ),
         ),
+
         error: (err, _) => Scaffold(
           backgroundColor: const Color(0xFF0F172A),
           body: Center(
@@ -142,96 +149,112 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen> {
             ),
           ),
         ),
+
         data: (data) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _fitCamera(data));
 
           return Scaffold(
             backgroundColor: const Color(0xFF0F172A),
-            // No floatingActionButton here — we position it manually
             body: Stack(
               children: [
-                // ── Map ────────────────────────────────────────────────
-                // Make sure to import your new widget at the top
-// import '../widgets/route_line_widget.dart';
+                // ───────── MAP ─────────
+                FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: data.myPos ?? const LatLng(13.0827, 80.2707),
+                    initialZoom: 16,
+                    onPositionChanged: (position, hasGesture) {
+                      if (hasGesture && _isAutoFollow) {
+                        setState(() => _isAutoFollow = false);
+                      }
+                    },
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName:
+                          'com.example.session_based_tracking_app',
+                    ),
 
-FlutterMap(
-  mapController: _mapController,
-  options: MapOptions(
-    initialCenter: data.myPos ?? const LatLng(13.0827, 80.2707),
-    initialZoom: 16,
-    onPositionChanged: (position, hasGesture) {
-      if (hasGesture && _isAutoFollow) {
-        setState(() => _isAutoFollow = false);
-      }
-    },
-  ),
-  children: [
-    // 1. Base Map Tiles
-    TileLayer(
-      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      userAgentPackageName: 'com.example.session_based_tracking_app',
-    ),
+                    RouteLineWidget(routePoints: data.routePoints),
 
-    // 2. The Road Path (New Widget)
-    RouteLineWidget(routePoints: data.routePoints),
+                    MarkerLayer(
+                      markers: [
+                        if (data.myPos != null)
+                          Marker(
+                            point: data.myPos!,
+                            width: 44,
+                            height: 44,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: const Color(
+                                  0xFF4ECDC4,
+                                ).withValues(alpha: 0.2),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: const Color(0xFF4ECDC4),
+                                  width: 2,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.my_location_rounded,
+                                color: Color(0xFF4ECDC4),
+                                size: 22,
+                              ),
+                            ),
+                          ),
 
-    // 3. User Markers
-    MarkerLayer(
-      markers: [
-        if (data.myPos != null)
-          Marker(
-            point: data.myPos!,
-            width: 44,
-            height: 44,
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF4ECDC4).withValues(alpha: 0.2),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: const Color(0xFF4ECDC4),
-                  width: 2,
+                        if (data.peerPos != null)
+                          Marker(
+                            point: data.peerPos!,
+                            width: 44,
+                            height: 44,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: data.isPeerTimeout
+                                    ? Colors.redAccent.withValues(alpha: 0.15)
+                                    : const Color(
+                                        0xFFFF8C42,
+                                      ).withValues(alpha: 0.2),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: data.isPeerTimeout
+                                      ? Colors.redAccent
+                                      : const Color(0xFFFF8C42),
+                                  width: 2,
+                                ),
+                              ),
+                              child: Icon(
+                                Icons.person_pin_circle_rounded,
+                                color: data.isPeerTimeout
+                                    ? Colors.redAccent
+                                    : const Color(0xFFFF8C42),
+                                size: 22,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
-              ),
-              child: const Icon(
-                Icons.my_location_rounded,
-                color: Color(0xFF4ECDC4),
-                size: 22,
-              ),
-            ),
-          ),
-        if (data.peerPos != null)
-          Marker(
-            point: data.peerPos!,
-            width: 44,
-            height: 44,
-            child: Container(
-              decoration: BoxDecoration(
-                color: data.isPeerTimeout
-                    ? Colors.redAccent.withValues(alpha: 0.15)
-                    : const Color(0xFFFF8C42).withValues(alpha: 0.2),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: data.isPeerTimeout
-                      ? Colors.redAccent
-                      : const Color(0xFFFF8C42),
-                  width: 2,
-                ),
-              ),
-              child: Icon(
-                Icons.person_pin_circle_rounded,
-                color: data.isPeerTimeout
-                    ? Colors.redAccent
-                    : const Color(0xFFFF8C42),
-                size: 22,
-              ),
-            ),
-          ),
-      ],
-    ),
-  ],
-),
 
-                // ── Header with End Session button ─────────────────────
+                // ───────── COMPASS OVERLAY ─────────
+                if (data.isCompassMode)
+                  Positioned.fill(
+                    child: CompassHudWidget(
+                      distance: data.roadDistance,
+                      trackedName: peerName,
+                      targetBearing: data.targetBearing,
+                      onBackToMap: () {
+                        ref
+                            .read(liveTrackingProvider.notifier)
+                            .disableCompassMode();
+                      },
+                    ),
+                  ),
+
+                // ───────── HEADER ─────────
                 Positioned(
                   top: 0,
                   left: 16,
@@ -252,7 +275,7 @@ FlutterMap(
                   ),
                 ),
 
-                // ── Waiting for peer overlay ────────────────────────────
+                // ───────── WAITING OVERLAY ─────────
                 if (data.peerPos == null)
                   Positioned.fill(
                     child: IgnorePointer(
@@ -268,44 +291,21 @@ FlutterMap(
                               0xFF1E293B,
                             ).withValues(alpha: 0.92),
                             borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                              color: const Color(
-                                0xFF4ECDC4,
-                              ).withValues(alpha: 0.3),
-                            ),
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Color(0xFF4ECDC4),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Flexible(
-                                child: Text(
-                                  'Waiting for $peerName signal…',
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Color(0xFF7A9BC0),
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            ],
+                          child: Text(
+                            'Waiting for $peerName signal…',
+                            style: const TextStyle(
+                              color: Color(0xFF7A9BC0),
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
 
-                // ── Recenter FAB above proximity card ──────────────────
-                if (!_isAutoFollow)
+                // ───────── RECENTER FAB ─────────
+                if (!_isAutoFollow && !data.isCompassMode)
                   Positioned(
                     bottom: 210,
                     right: 16,
@@ -317,19 +317,20 @@ FlutterMap(
                     ),
                   ),
 
-                // ── Proximity card ─────────────────────────────────────
-                Positioned(
-                  bottom: 24,
-                  left: 16,
-                  right: 16,
-                  child: ProximityInfoWidget(
-                    distance: data.distanceLabel,
-                    eta: data.etaLabel,
-                    myName: myName,
-                    peerName: peerName,
-                    peerConnected: !data.isPeerTimeout,
+                // ───────── PROXIMITY CARD ─────────
+                if (!data.isCompassMode)
+                  Positioned(
+                    bottom: 24,
+                    left: 16,
+                    right: 16,
+                    child: ProximityInfoWidget(
+                      distance: data.distanceLabel,
+                      eta: data.etaLabel,
+                      myName: myName,
+                      peerName: peerName,
+                      peerConnected: !data.isPeerTimeout,
+                    ),
                   ),
-                ),
               ],
             ),
           );

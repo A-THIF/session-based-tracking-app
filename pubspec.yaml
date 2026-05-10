@@ -35,37 +35,24 @@ dependencies:
   flutter_riverpod: ^2.5.1
   ably_flutter: ^1.2.44
   geolocator: ^11.0.0
-  google_maps_flutter: ^2.6.0
   flutter_compass: ^0.8.0
-  flutter_background_service: ^5.0.7 # Add this!
-  device_info_plus: ^12.4.0 # Add this for device info
-  flutter_map: ^6.2.1 # Add this for map marker clustering
+  flutter_background_service: ^5.0.7
+  device_info_plus: ^12.4.0
+  flutter_map: ^6.2.1
   latlong2: ^0.9.1
-  google_polyline_algorithm: ^3.1.0
   envied: ^0.5.4+1
+  shared_preferences: ^2.5.5
+  uuid: ^4.5.3
+  flutter_local_notifications: ^19.2.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   envied_generator: ^0.5.4+1
   build_runner: ^2.4.13
-
-  # The "flutter_lints" package below contains a set of recommended lints to
-  # encourage good coding practices. The lint set provided by the package is
-  # activated in the `analysis_options.yaml` file located at the root of your
-  # package. See that file for information about deactivating specific lint
-  # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
-# For information on the generic Dart part of this file, see the
-# following page: https://dart.dev/tools/pub/pubspec
-
-# The following section is specific to Flutter packages.
 flutter:
-
-  # The following line ensures that the Material Icons font is
-  # included with your application, so that you can use the icons in
-  # the material Icons class.
   uses-material-design: true
   
 

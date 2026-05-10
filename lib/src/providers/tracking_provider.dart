@@ -1,13 +1,14 @@
-// lib/src/providers/tracking_provider.dart
-
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart'; // For HapticFeedback
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import '../services/ably_service.dart';
 import '../services/routing_service.dart';
 import 'session_provider.dart';
+import '../utils/navigation_utils.dart';
+import '../utils/kalman_filter.dart';
 
 const int _kPacketTimeoutMs = 7000;
 
@@ -20,6 +21,10 @@ class TrackingData {
   final String distanceLabel;
   final String etaLabel;
   final bool isPeerTimeout;
+  final double roadDistance;
+  final int roadDuration;
+  final double targetBearing;
+  final bool isCompassMode;
 
   const TrackingData({
     this.myPos,
@@ -30,6 +35,10 @@ class TrackingData {
     this.distanceLabel = '—',
     this.etaLabel = '—',
     this.isPeerTimeout = false,
+    this.roadDistance = 0,
+    this.roadDuration = 0,
+    this.targetBearing = 0,
+    this.isCompassMode = false,
   });
 
   TrackingData copyWith({
@@ -40,7 +49,11 @@ class TrackingData {
     List<LatLng>? routePoints,
     String? distanceLabel,
     String? etaLabel,
+    double? roadDistance,
+    int? roadDuration,
     bool? isPeerTimeout,
+    double? targetBearing,
+    bool? isCompassMode,
   }) {
     return TrackingData(
       myPos: myPos ?? this.myPos,
@@ -51,6 +64,10 @@ class TrackingData {
       distanceLabel: distanceLabel ?? this.distanceLabel,
       etaLabel: etaLabel ?? this.etaLabel,
       isPeerTimeout: isPeerTimeout ?? this.isPeerTimeout,
+      roadDistance: roadDistance ?? this.roadDistance,
+      roadDuration: roadDuration ?? this.roadDuration,
+      targetBearing: targetBearing ?? this.targetBearing,
+      isCompassMode: isCompassMode ?? this.isCompassMode,
     );
   }
 }
@@ -67,6 +84,13 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
   LatLng? _lastRoutePos;
   String? _currentSessionCode;
   DateTime _lastPeerPacket = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // 🟢 FIXED: Class-level Filter Declarations
+  final KalmanFilter _myLatFilter = KalmanFilter(q: 0.0001, r: 0.001);
+  final KalmanFilter _myLngFilter = KalmanFilter(q: 0.0001, r: 0.001);
+  KalmanFilter? _peerLatFilter;
+  KalmanFilter? _peerLngFilter;
+  bool _filtersInitialized = false;
 
   @override
   Future<TrackingData> build() async {
@@ -114,22 +138,37 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
   }
 
   void _startGpsPublisher(AblyService ablyService, String myDeviceId) {
-    _gpsSub =
-        Geolocator.getPositionStream(
-          locationSettings: AndroidSettings(
-            accuracy: LocationAccuracy.best,
-            intervalDuration: const Duration(seconds: 3),
-            distanceFilter: 0,
-          ),
-        ).listen((pos) {
-          final me = LatLng(pos.latitude, pos.longitude);
+    _gpsSub = Geolocator.getPositionStream(
+      locationSettings: AndroidSettings(
+        accuracy: LocationAccuracy.best,
+        intervalDuration: const Duration(seconds: 3),
+        distanceFilter: 0,
+      ),
+    ).listen((pos) {
+      // 🟢 FIXED: Filter initialization and processing moved INSIDE the listener
+      if (!_filtersInitialized) {
+        _myLatFilter.reset(pos.latitude);
+        _myLngFilter.reset(pos.longitude);
+        _filtersInitialized = true;
+      }
 
-          ablyService.publishLocation(myDeviceId, pos.latitude, pos.longitude);
+      final smoothLat = _myLatFilter.filter(pos.latitude);
+      final smoothLng = _myLngFilter.filter(pos.longitude);
+      final me = LatLng(smoothLat, smoothLng);
 
-          final current = state.valueOrNull ?? const TrackingData();
+      // Publish the smoothed location for a better peer experience
+      ablyService.publishLocation(myDeviceId, smoothLat, smoothLng);
 
-          state = AsyncData(_recalc(current.copyWith(myPos: me)));
-        });
+      final current = state.valueOrNull ?? const TrackingData();
+      state = AsyncData(_recalc(current.copyWith(myPos: me)));
+    });
+  }
+
+  void disableCompassMode() {
+    final current = state.valueOrNull;
+    if (current != null) {
+      state = AsyncData(current.copyWith(isCompassMode: false));
+    }
   }
 
   void _startPeerListener(AblyService ablyService, String myDeviceId) {
@@ -144,13 +183,23 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
 
         if (senderId == myDeviceId) return;
 
+        final rawLat = (raw['lat'] as num).toDouble();
+        final rawLng = (raw['lng'] as num).toDouble();
+
+        // 🟢 FIXED: Peer filter initialization using reset()
+        if (_peerLatFilter == null || _peerLngFilter == null) {
+          _peerLatFilter = KalmanFilter(q: 0.0001, r: 0.001);
+          _peerLngFilter = KalmanFilter(q: 0.0001, r: 0.001);
+          _peerLatFilter!.reset(rawLat);
+          _peerLngFilter!.reset(rawLng);
+        }
+
         final peer = LatLng(
-          (raw['lat'] as num).toDouble(),
-          (raw['lng'] as num).toDouble(),
+          _peerLatFilter!.filter(rawLat),
+          _peerLngFilter!.filter(rawLng),
         );
 
         _lastPeerPacket = DateTime.now();
-
         final current = state.valueOrNull ?? const TrackingData();
 
         if (_currentSessionCode != null) {
@@ -158,7 +207,7 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
         }
 
         state = AsyncData(
-          _recalc(current.copyWith(peerPos: peer, isPeerTimeout: false)),
+          current.copyWith(peerPos: peer, isPeerTimeout: false),
         );
 
         debugPrint('[LiveTracking] Peer updated: $senderId');
@@ -178,10 +227,6 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
       final ageMs = DateTime.now().difference(_lastPeerPacket).inMilliseconds;
 
       if (ageMs > _kPacketTimeoutMs && !current.isPeerTimeout) {
-        debugPrint(
-          '{"type":"location-timeout","session":"$sessionCode","ageMs":$ageMs}',
-        );
-
         state = AsyncData(current.copyWith(isPeerTimeout: true));
       }
     });
@@ -191,7 +236,6 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     if (myPos == null) return;
 
     final now = DateTime.now();
-
     double distanceMoved = 0;
 
     if (_lastRoutePos != null) {
@@ -210,9 +254,32 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
       _lastRoutePos = myPos;
 
       try {
-        final points = await _routingService.getWaterfallRoute(myPos, peerPos);
+        final routeData = await _routingService.getWaterfallRoute(
+          myPos,
+          peerPos,
+        );
 
-        state = AsyncData(state.value!.copyWith(routePoints: points));
+        final dist = routeData.distanceMeters;
+        final distLabel = dist >= 1000
+            ? '${(dist / 1000).toStringAsFixed(2)} km'
+            : '${dist.toStringAsFixed(0)} m';
+
+        final etaSec = routeData.durationSeconds;
+        final etaLabel = etaSec > 60
+            ? '${etaSec ~/ 60}m ${etaSec % 60}s'
+            : '${etaSec}s';
+
+        state = AsyncData(
+          _recalc(
+            state.value!.copyWith(
+              routePoints: routeData.points,
+              distanceLabel: distLabel,
+              etaLabel: etaLabel,
+              roadDistance: dist,
+              roadDuration: etaSec,
+            ),
+          ),
+        );
       } catch (e) {
         debugPrint('[Routing] Error: $e');
       }
@@ -229,8 +296,12 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
       data.peerPos!.longitude,
     );
 
-    final etaSec = (dist / 1.4).round();
+    // 🟢 Haptic Feedback Trigger for proximity
+    if (dist < 5) {
+      HapticFeedback.vibrate();
+    }
 
+    final etaSec = (dist / 1.4).round();
     final distLabel = dist >= 1000
         ? '${(dist / 1000).toStringAsFixed(2)} km'
         : '${dist.toStringAsFixed(0)} m';
@@ -239,7 +310,23 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
         ? '${etaSec ~/ 60}m ${etaSec % 60}s'
         : '${etaSec}s';
 
-    return data.copyWith(distanceLabel: distLabel, etaLabel: etaLabel);
+    double bearing;
+    if (data.routePoints.length > 1) {
+      final targetIndex = data.routePoints.length > 5 ? 5 : 1;
+      bearing = NavigationUtils.calculateBearing(
+        data.myPos!,
+        data.routePoints[targetIndex],
+      );
+    } else {
+      bearing = NavigationUtils.calculateBearing(data.myPos!, data.peerPos!);
+    }
+
+    return data.copyWith(
+      distanceLabel: distLabel,
+      etaLabel: etaLabel,
+      targetBearing: bearing,
+      isCompassMode: data.isCompassMode || dist < 25,
+    );
   }
 
   Future<(List<LatLng>, List<LatLng>)> _loadHistory(String code) async {
@@ -249,7 +336,6 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
           .loadSessionDetails(code);
 
       final List<dynamic> path = details['path'] ?? [];
-
       final myPath = path
           .map(
             (c) => LatLng(
@@ -275,5 +361,5 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
 
 final liveTrackingProvider =
     AsyncNotifierProvider<LiveTrackingNotifier, TrackingData>(
-      LiveTrackingNotifier.new,
-    );
+  LiveTrackingNotifier.new,
+);

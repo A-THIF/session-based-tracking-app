@@ -1,11 +1,7 @@
-// lib/src/providers/session_provider.dart
-//
-// Community 1 (Home)  : startNewSession / joinSession → ApiService → waiting
-// Community 2 (Waiting): sole owner of AblyService init, presence, and
-//                        session_state:started listener
-
+import 'dart:convert';
 import 'package:ably_flutter/ably_flutter.dart' as ably;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/session_model.dart';
 import '../services/api_service.dart';
 import '../services/ably_service.dart';
@@ -56,12 +52,31 @@ class SessionNotifier extends StateNotifier<SessionState> {
 
   String _normalizeDeviceId(String id) => id.trim().toLowerCase();
 
+  // Get UUID from storage — this is now the deviceId
+  // Replace _getUuid() with:
+  Future<String> _getUuid() async {
+    return await _api.getDeviceId();
+  }
+
+  // Get username for presence display
+  Future<String> _getDisplayName() async {
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString('user_profile');
+    if (stored == null) return 'unknown';
+    try {
+      final json = jsonDecode(stored);
+      return json['username'] as String? ?? 'unknown';
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+
   // ── Community 1: Home actions ────────────────────────────────────────────
 
   Future<void> startNewSession() async {
     state = state.copyWith(status: SessionStatus.loading);
     try {
-      final id = await _api.getDeviceId();
+      final id = await _getUuid(); // ← UUID now, not device model
       final data = await _api.createSession(60);
       final session = Session(code: data['sessionCode'] as String);
 
@@ -73,20 +88,18 @@ class SessionNotifier extends StateNotifier<SessionState> {
       );
       await _initAbly(session.code, id);
     } catch (e) {
-    // 🔴 SEND TO RENDER LOGS
-    _api.sendRemoteLog("SESSION_CREATE_FAIL", "N/A", e.toString());
-    
-    state = state.copyWith(
-      status: SessionStatus.error,
-      errorMessage: e.toString(),
-    );
-  }
+      _api.sendRemoteLog("SESSION_CREATE_FAIL", "N/A", e.toString());
+      state = state.copyWith(
+        status: SessionStatus.error,
+        errorMessage: _friendlyError(e.toString()),
+      );
+    }
   }
 
   Future<void> joinSession(String code) async {
     state = state.copyWith(status: SessionStatus.loading);
     try {
-      final id = await _api.getDeviceId();
+      final id = await _getUuid(); // ← UUID now, not device model
       final session = await _api.joinSession(code, id);
 
       state = state.copyWith(
@@ -99,7 +112,7 @@ class SessionNotifier extends StateNotifier<SessionState> {
     } catch (e) {
       state = state.copyWith(
         status: SessionStatus.error,
-        errorMessage: e.toString(),
+        errorMessage: _friendlyError(e.toString()),
       );
     }
   }
@@ -109,52 +122,52 @@ class SessionNotifier extends StateNotifier<SessionState> {
   Future<void> _initAbly(String code, String deviceId) async {
     final ablyService = _ref.read(ablyServiceProvider);
 
-    // deviceId IS the clientId — critical for echo filtering in Community 3
     await ablyService.initAbly(code, deviceId);
-    await ablyService.enterPresence(deviceId);
 
-    // Populate initial presence snapshot immediately
-    final existing = await ablyService.getPresentMembers();
+    final displayName = await _getDisplayName();
+    await ablyService.enterPresence(displayName);
+
+    // Fix: single clean block, no duplicate variable
+    final existingMembers = await ablyService.getPresentMembers();
     if (mounted) {
       state = state.copyWith(
-        presentMembers: existing
-            .map((m) => m.clientId ?? 'Unknown')
+        presentMembers: existingMembers
             .where(
-              (id) => _normalizeDeviceId(id) != _normalizeDeviceId(deviceId),
+              (m) =>
+                  _normalizeDeviceId(m.clientId ?? '') !=
+                  _normalizeDeviceId(deviceId),
             )
+            .map((m) => m.data?.toString() ?? m.clientId ?? 'Unknown')
             .toList(),
       );
     }
 
-    // Live presence updates — enter/present adds, leave removes
     ablyService.subscribeToPresence((msg) async {
       if (!mounted) return;
-      final name = msg.clientId ?? 'Unknown';
+      final name = msg.data?.toString() ?? msg.clientId ?? 'Unknown';
+      final clientId = msg.clientId ?? '';
 
-      // Never show ourselves in the list
-      if (_normalizeDeviceId(name) == _normalizeDeviceId(deviceId)) return;
+      if (_normalizeDeviceId(clientId) == _normalizeDeviceId(deviceId)) return;
 
       if (msg.action == ably.PresenceAction.enter ||
           msg.action == ably.PresenceAction.present) {
         final current = List<String>.from(state.presentMembers);
-        final alreadyPresent = current.any(
-          (member) => _normalizeDeviceId(member) == _normalizeDeviceId(name),
-        );
-        if (!alreadyPresent) {
+        if (!current.any(
+          (m) => _normalizeDeviceId(m) == _normalizeDeviceId(name),
+        )) {
           current.add(name);
           state = state.copyWith(presentMembers: current);
         }
       } else if (msg.action == ably.PresenceAction.leave) {
-        final current = List<String>.from(state.presentMembers)
-          ..removeWhere(
-            (member) =>
-                _normalizeDeviceId(member) == _normalizeDeviceId(name),
-          );
-        state = state.copyWith(presentMembers: current);
+        state = state.copyWith(
+          presentMembers: List<String>.from(state.presentMembers)
+            ..removeWhere(
+              (m) => _normalizeDeviceId(m) == _normalizeDeviceId(name),
+            ),
+        );
       }
     });
 
-    // Guest: listen for host's session_state:started signal
     ablyService.subscribeToChannelMessages().listen((message) {
       if (!mounted) return;
       final data = message.data as Map?;
@@ -164,7 +177,7 @@ class SessionNotifier extends StateNotifier<SessionState> {
     });
   }
 
-  // ── Community 2 → 3 transition: host triggers this ───────────────────────
+  // ── Community 2 → 3 transition ───────────────────────────────────────────
 
   void beginTracking() {
     _ref.read(ablyServiceProvider).publishSessionStarted();
@@ -175,17 +188,31 @@ class SessionNotifier extends StateNotifier<SessionState> {
 
   void cancelSession() {
     _ref.read(ablyServiceProvider).dispose();
-    state = const SessionState(); // reset to idle
+    state = const SessionState();
   }
 
-  // ── Utility: used by tracking_provider to seed breadcrumb history ─────────
+  // ── Utility ───────────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> loadSessionDetails(String code) {
     return _api.getSessionDetails(code);
   }
+
+  String _friendlyError(String raw) {
+    if (raw.contains('SocketException') || raw.contains('Failed host lookup')) {
+      return 'No internet connection. Check your Wi-Fi or data.';
+    }
+    if (raw.contains('TimeoutException')) {
+      return 'Server is waking up. Please try again in 10 seconds.';
+    }
+    if (raw.contains('404') || raw.contains('Invalid session')) {
+      return 'Session code not found. Check the code and try again.';
+    }
+    return 'Something went wrong. Please try again.';
+  }
 }
 
-final sessionProvider =
-    StateNotifierProvider<SessionNotifier, SessionState>((ref) {
+final sessionProvider = StateNotifierProvider<SessionNotifier, SessionState>((
+  ref,
+) {
   return SessionNotifier(ApiService(), ref);
 });

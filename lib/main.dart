@@ -1,29 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
 import 'src/constants/retro_theme.dart';
+import 'src/providers/user_provider.dart';
 import 'src/views/home_screen.dart';
-import 'src/services/background_service.dart'; // ✅ ADD THIS
+import 'src/views/identity/identity_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  /// 🔥 IMPORTANT: Initialize background service
-  await initializeService();
-
-  runApp(const ProviderScope(child: SessionTrackingApp()));
+  runApp(const ProviderScope(child: TraceApp()));
 }
 
-class SessionTrackingApp extends StatelessWidget {
-  const SessionTrackingApp({super.key});
+class TraceApp extends ConsumerWidget {
+  const TraceApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final userAsync = ref.watch(userProvider);
+
     return MaterialApp(
-      title: 'Session Tracking App',
-      debugShowCheckedModeBanner: false,
+      title: 'Trace',
       theme: buildRetroTheme(),
-      home: const HomeScreen(),
+      // If user profile exists, go home. If not, go to identity setup.
+      home: userAsync.when(
+        data: (user) =>
+            user == null ? const IdentityScreen() : const HomeScreen(),
+        loading: () =>
+            const Scaffold(body: Center(child: CircularProgressIndicator())),
+        error: (err, stack) => const IdentityScreen(),
+      ),
     );
   }
 }
