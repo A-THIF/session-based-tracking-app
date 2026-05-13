@@ -6,6 +6,11 @@ class ProximityInfoWidget extends StatelessWidget {
   final String myName;
   final String peerName;
   final bool peerConnected;
+  final double mySpeed; // 🟢 Add this
+  final double peerSpeed; // 🟢 Add this
+  // ── Spotlight ──────────────────────────────────────────────────
+  final bool isSpotlightActive;
+  final VoidCallback onSpotlightToggle;
 
   const ProximityInfoWidget({
     super.key,
@@ -13,6 +18,10 @@ class ProximityInfoWidget extends StatelessWidget {
     required this.eta,
     required this.myName,
     required this.peerName,
+    required this.mySpeed, // 🟢 Add this
+    required this.peerSpeed, // 🟢 Add this
+    required this.isSpotlightActive,
+    required this.onSpotlightToggle,
     this.peerConnected = true,
   });
 
@@ -50,6 +59,7 @@ class ProximityInfoWidget extends StatelessWidget {
                   : Colors.redAccent.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(20),
             ),
+            // Connection pill — just status, no legend item
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -64,20 +74,16 @@ class ProximityInfoWidget extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    peerConnected
-                        ? '$peerName is live'
-                        : '$peerName — no signal (>7s)',
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: peerConnected
-                          ? const Color(0xFF00E676)
-                          : Colors.redAccent,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.3,
-                    ),
+                Text(
+                  peerConnected
+                      ? '$peerName is live'
+                      : '$peerName — no signal (>7s)',
+                  style: TextStyle(
+                    color: peerConnected
+                        ? const Color(0xFF00E676)
+                        : Colors.redAccent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -121,6 +127,7 @@ class ProximityInfoWidget extends StatelessWidget {
           const SizedBox(height: 10),
 
           // ── Legend ───────────────────────────────────────────────────
+          // ── Legend ───────────────────────────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -128,6 +135,8 @@ class ProximityInfoWidget extends StatelessWidget {
                 child: _LegendItem(
                   color: const Color(0xFF4ECDC4),
                   label: myName,
+                  speed:
+                      mySpeed, // 🟢 This ensures the speed badge shows your speed
                 ),
               ),
               const SizedBox(width: 16),
@@ -135,9 +144,21 @@ class ProximityInfoWidget extends StatelessWidget {
                 child: _LegendItem(
                   color: const Color(0xFFFF8C42),
                   label: peerName,
+                  speed:
+                      peerSpeed, // 🟢 This ensures the speed badge shows peer speed
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(color: Color(0xFF1E3A5F), height: 1),
+          const SizedBox(height: 12),
+
+          // ── Spotlight row ─────────────────────────────────────────
+          _SpotlightRow(
+            peerName: peerName,
+            isActive: isSpotlightActive,
+            onToggle: onSpotlightToggle,
           ),
         ],
       ),
@@ -192,8 +213,13 @@ class _StatCell extends StatelessWidget {
 class _LegendItem extends StatelessWidget {
   final Color color;
   final String label;
+  final double speed; // 🟢 Add speed
 
-  const _LegendItem({required this.color, required this.label});
+  const _LegendItem({
+    required this.color,
+    required this.label,
+    required this.speed,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -201,22 +227,104 @@ class _LegendItem extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 24,
-          height: 4,
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(2),
-          ),
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 6),
         Flexible(
           child: Text(
-            label,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xFF7A9BC0),
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
+            "$label • ${speed.toStringAsFixed(0)} km/h", // 🟢 Shows: Naf • 34 km/h
+            style: const TextStyle(color: Color(0xFF7A9BC0), fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+}
+// ── Spotlight row ─────────────────────────────────────────────
+
+class _SpotlightRow extends StatelessWidget {
+  final String peerName;
+  final bool isActive;
+  final VoidCallback onToggle;
+
+  const _SpotlightRow({
+    required this.peerName,
+    required this.isActive,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        // Left: label + description
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'SPOTLIGHT',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.8,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                isActive
+                    ? 'Your screen is visible to $peerName'
+                    : 'Help $peerName find you in a crowd',
+                style: const TextStyle(color: Color(0xFF7A9BC0), fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(width: 12),
+
+        // Right: toggle button
+        GestureDetector(
+          onTap: onToggle,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: isActive
+                  ? Colors.redAccent.withValues(alpha: 0.15)
+                  : const Color(0xFF4ECDC4),
+              borderRadius: BorderRadius.circular(12),
+              border: isActive
+                  ? Border.all(
+                      color: Colors.redAccent.withValues(alpha: 0.5),
+                      width: 0.8,
+                    )
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isActive ? Icons.close_rounded : Icons.wb_sunny_rounded,
+                  size: 16,
+                  color: isActive ? Colors.redAccent : const Color(0xFF0F172A),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  isActive ? 'TURN OFF' : 'TURN ON',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                    color: isActive
+                        ? Colors.redAccent
+                        : const Color(0xFF0F172A),
+                  ),
+                ),
+              ],
             ),
           ),
         ),

@@ -15,6 +15,7 @@ class SessionState {
   final bool isHost;
   final String? errorMessage;
   final List<String> presentMembers;
+  final String? username; // 🟢 Add this line
 
   const SessionState({
     this.session,
@@ -23,6 +24,7 @@ class SessionState {
     this.isHost = false,
     this.errorMessage,
     this.presentMembers = const [],
+    this.username, // 🟢 Add this line
   });
 
   SessionState copyWith({
@@ -32,6 +34,7 @@ class SessionState {
     bool? isHost,
     String? errorMessage,
     List<String>? presentMembers,
+    String? username, // 🟢 Add this parameter
   }) {
     return SessionState(
       session: session ?? this.session,
@@ -40,6 +43,7 @@ class SessionState {
       isHost: isHost ?? this.isHost,
       errorMessage: errorMessage ?? this.errorMessage,
       presentMembers: presentMembers ?? this.presentMembers,
+      username: username ?? this.username, // 🟢 Add this line
     );
   }
 }
@@ -124,7 +128,9 @@ class SessionNotifier extends StateNotifier<SessionState> {
 
     await ablyService.initAbly(code, deviceId);
 
+    // In both startNewSession() and joinSession(), after _initAbly:
     final displayName = await _getDisplayName();
+    state = state.copyWith(username: displayName);
     await ablyService.enterPresence(displayName);
 
     // Fix: single clean block, no duplicate variable

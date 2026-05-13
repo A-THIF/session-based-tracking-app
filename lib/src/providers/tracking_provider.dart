@@ -9,12 +9,22 @@ import '../services/routing_service.dart';
 import 'session_provider.dart';
 import '../utils/navigation_utils.dart';
 import '../utils/kalman_filter.dart';
+import '../utils/route_snapper.dart';
 
 const int _kPacketTimeoutMs = 7000;
 
+// ... inside class TrackingData ...
 class TrackingData {
   final LatLng? myPos;
   final LatLng? peerPos;
+  // 🟢 ADD THESE TWO FIELDS
+  final double myHeading;
+  final double peerHeading;
+  final double mySpeedKmh; // 🟢 Add this
+  final double peerSpeedKmh; // 🟢 Add this
+  final bool isSpotlightActive;
+  final bool isPeerSpotlighting;
+
   final List<LatLng> myPath;
   final List<LatLng> peerPath;
   final List<LatLng> routePoints;
@@ -29,6 +39,8 @@ class TrackingData {
   const TrackingData({
     this.myPos,
     this.peerPos,
+    this.myHeading = 0, // 🟢 Initialize
+    this.peerHeading = 0, // 🟢 Initialize
     this.myPath = const [],
     this.peerPath = const [],
     this.routePoints = const [],
@@ -39,11 +51,17 @@ class TrackingData {
     this.roadDuration = 0,
     this.targetBearing = 0,
     this.isCompassMode = false,
+    this.mySpeedKmh = 0,
+    this.peerSpeedKmh = 0,
+    this.isSpotlightActive = false,
+    this.isPeerSpotlighting = false,
   });
 
   TrackingData copyWith({
     LatLng? myPos,
     LatLng? peerPos,
+    double? myHeading, // 🟢 Add to copyWith
+    double? peerHeading, // 🟢 Add to copyWith
     List<LatLng>? myPath,
     List<LatLng>? peerPath,
     List<LatLng>? routePoints,
@@ -54,10 +72,16 @@ class TrackingData {
     bool? isPeerTimeout,
     double? targetBearing,
     bool? isCompassMode,
+    double? mySpeedKmh, // 🟢 Add to copyWith
+    double? peerSpeedKmh, // 🟢 Add to copyWith
+    bool? isSpotlightActive,
+    bool? isPeerSpotlighting,
   }) {
     return TrackingData(
       myPos: myPos ?? this.myPos,
       peerPos: peerPos ?? this.peerPos,
+      myHeading: myHeading ?? this.myHeading, // 🟢 Update
+      peerHeading: peerHeading ?? this.peerHeading, // 🟢 Update
       myPath: myPath ?? this.myPath,
       peerPath: peerPath ?? this.peerPath,
       routePoints: routePoints ?? this.routePoints,
@@ -68,6 +92,8 @@ class TrackingData {
       roadDuration: roadDuration ?? this.roadDuration,
       targetBearing: targetBearing ?? this.targetBearing,
       isCompassMode: isCompassMode ?? this.isCompassMode,
+      mySpeedKmh: mySpeedKmh ?? this.mySpeedKmh, // 🟢 Update
+      peerSpeedKmh: peerSpeedKmh ?? this.peerSpeedKmh, // 🟢 Update
     );
   }
 }
@@ -137,31 +163,75 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     return TrackingData(myPath: initialPaths.$1, peerPath: initialPaths.$2);
   }
 
+  void toggleSpotlight() {
+    final current = state.valueOrNull;
+    if (current == null) return;
+
+    final newState = !current.isSpotlightActive;
+    state = AsyncData(current.copyWith(isSpotlightActive: newState));
+
+    // Notify peer via Ably
+    ref.read(ablyServiceProvider).publishSpotlight(newState);
+  }
+
+  void dismissPeerSpotlight() {
+    final current = state.valueOrNull;
+    if (current == null) return;
+
+    // Tell peer we found them — turns off their pulse too
+    ref.read(ablyServiceProvider).publishSpotlight(false);
+    state = AsyncData(current.copyWith(isPeerSpotlighting: false));
+  }
+
   void _startGpsPublisher(AblyService ablyService, String myDeviceId) {
-    _gpsSub = Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy: LocationAccuracy.best,
-        intervalDuration: const Duration(seconds: 3),
-        distanceFilter: 0,
-      ),
-    ).listen((pos) {
-      // 🟢 FIXED: Filter initialization and processing moved INSIDE the listener
-      if (!_filtersInitialized) {
-        _myLatFilter.reset(pos.latitude);
-        _myLngFilter.reset(pos.longitude);
-        _filtersInitialized = true;
-      }
+    _gpsSub =
+        Geolocator.getPositionStream(
+          locationSettings: AndroidSettings(
+            accuracy: LocationAccuracy.best,
+            intervalDuration: const Duration(seconds: 1),
+            distanceFilter: 0,
+          ),
+        ).listen((pos) {
+          // 🟢 FIXED: Filter initialization and processing moved INSIDE the listener
+          if (!_filtersInitialized) {
+            _myLatFilter.reset(pos.latitude);
+            _myLngFilter.reset(pos.longitude);
+            _filtersInitialized = true;
+          }
 
-      final smoothLat = _myLatFilter.filter(pos.latitude);
-      final smoothLng = _myLngFilter.filter(pos.longitude);
-      final me = LatLng(smoothLat, smoothLng);
+          final smoothLat = _myLatFilter.filter(pos.latitude);
+          final smoothLng = _myLngFilter.filter(pos.longitude);
+          final rawMe = LatLng(smoothLat, smoothLng);
 
-      // Publish the smoothed location for a better peer experience
-      ablyService.publishLocation(myDeviceId, smoothLat, smoothLng);
+          // 🟢 APPLY SNAP-TO-ROAD
+          // If we have route points, snap the smoothed GPS to the blue line
+          final currentData = state.valueOrNull;
+          LatLng me = rawMe;
+          if (currentData != null && currentData.routePoints.isNotEmpty) {
+            me = RouteSnapper.snapToRoute(rawMe, currentData.routePoints);
+          }
 
-      final current = state.valueOrNull ?? const TrackingData();
-      state = AsyncData(_recalc(current.copyWith(myPos: me)));
-    });
+          // Publish smoothed location + heading so peer can render our arrow
+          ablyService.publishLocation(
+            myDeviceId,
+            smoothLat,
+            smoothLng,
+            heading: pos.heading,
+            speed: pos.speed, // 🟢 Add speed to publishLocation
+          );
+
+          final current = state.valueOrNull ?? const TrackingData();
+          final speedKmh = (pos.speed < 0 ? 0.0 : pos.speed) * 3.6;
+          state = AsyncData(
+            _recalc(
+              current.copyWith(
+                myPos: me,
+                myHeading: pos.heading,
+                mySpeedKmh: speedKmh,
+              ),
+            ),
+          );
+        });
   }
 
   void disableCompassMode() {
@@ -176,6 +246,14 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
 
     _ablySub = ablyService.getLocationStream().listen(
       (msg) {
+        // 🟢 1. Handle spotlight signal FIRST
+        if (msg.name == 'spotlight') {
+          final raw = Map<String, dynamic>.from(msg.data as Map);
+          final isOn = raw['active'] as bool? ?? false;
+          final current = state.valueOrNull ?? const TrackingData();
+          state = AsyncData(current.copyWith(isPeerSpotlighting: isOn));
+          return; // Stop here for spotlight messages
+        }
         if (msg.name != 'location_update' || msg.data == null) return;
 
         final raw = Map<String, dynamic>.from(msg.data as Map);
@@ -185,8 +263,10 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
 
         final rawLat = (raw['lat'] as num).toDouble();
         final rawLng = (raw['lng'] as num).toDouble();
-
-        // 🟢 FIXED: Peer filter initialization using reset()
+        final rawHeading = (raw['heading'] as num?)?.toDouble() ?? 0.0;
+        final rawSpeed = (raw['speed'] as num?)?.toDouble() ?? 0.0;
+        final peerSpeedKmh = (rawSpeed < 0 ? 0.0 : rawSpeed) * 3.6;
+        // Peer filter initialization using reset()
         if (_peerLatFilter == null || _peerLngFilter == null) {
           _peerLatFilter = KalmanFilter(q: 0.0001, r: 0.001);
           _peerLngFilter = KalmanFilter(q: 0.0001, r: 0.001);
@@ -207,7 +287,12 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
         }
 
         state = AsyncData(
-          current.copyWith(peerPos: peer, isPeerTimeout: false),
+          current.copyWith(
+            peerPos: peer,
+            peerHeading: rawHeading,
+            peerSpeedKmh: peerSpeedKmh,
+            isPeerTimeout: false,
+          ),
         );
 
         debugPrint('[LiveTracking] Peer updated: $senderId');
@@ -361,5 +446,5 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
 
 final liveTrackingProvider =
     AsyncNotifierProvider<LiveTrackingNotifier, TrackingData>(
-  LiveTrackingNotifier.new,
-);
+      LiveTrackingNotifier.new,
+    );

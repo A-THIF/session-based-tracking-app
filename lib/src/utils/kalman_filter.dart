@@ -1,4 +1,3 @@
-import 'dart:math';
 
 class KalmanFilter {
   final double _q; // Process noise

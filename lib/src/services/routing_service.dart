@@ -8,7 +8,7 @@ import '../config/constants.dart'; // <--- ADD THIS LINE
 
 /// Road route response model
 class RoadRoute {
-  final List<LatLng> points;  
+  final List<LatLng> points;
   final double distanceMeters;
   final int durationSeconds;
 
@@ -55,7 +55,7 @@ class RoutingService {
         );
       }
     } catch (e) {
-      print("Routing error: $e");
+      debugPrint('[RoutingService] Error: $e');
     }
 
     // fallback

@@ -1,6 +1,7 @@
 // lib/src/services/ably_service.dart
 
 import 'package:ably_flutter/ably_flutter.dart' as ably;
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api_service.dart';
 
@@ -21,13 +22,15 @@ class AblyService {
     if (_channel != null &&
         clientId == deviceId &&
         _initializedSessionCode == sessionCode) {
-      print('[AblyService] Already initialized for $deviceId on $sessionCode, skipping.');
+      debugPrint(
+        '[AblyService] Already initialized for $deviceId on $sessionCode, skipping.',
+      );
       return;
     }
 
     // Dispose old connection before re-initializing
     if (_realtime != null) {
-      print('[AblyService] Disposing old connection before re-init.');
+      debugPrint('[AblyService] Disposing old connection before re-init.');
       _realtime!.close();
       _realtime = null;
       _channel = null;
@@ -53,29 +56,39 @@ class AblyService {
 
       _channel = _realtime!.channels.get('session_$sessionCode');
 
-      print('[AblyService] Connected as $deviceId on session_$sessionCode');
+      debugPrint(
+        '[AblyService] Connected as $deviceId on session_$sessionCode',
+      );
     } catch (e) {
-      print('[AblyService] Init failed: $e');
+      debugPrint('[AblyService] Init failed: $e');
       rethrow;
     }
   }
 
   // ── Location ─────────────────────────────────────────────────────────────
 
-  void publishLocation(String deviceId, double lat, double lng) {
-    if (_channel == null) {
-      print('[AblyService] publishLocation: channel not ready');
-      return;
-    }
+  void publishLocation(
+    String deviceId,
+    double lat,
+    double lng, {
+    double heading = 0,
+    double speed = 0, // ADD
+  }) {
     _channel!.publish(
       name: 'location_update',
-      data: {'lat': lat, 'lng': lng, 'deviceId': deviceId},
+      data: {
+        'lat': lat,
+        'lng': lng,
+        'deviceId': deviceId,
+        'heading': heading,
+        'speed': speed, // ADD
+      },
     );
   }
 
   Stream<ably.Message> getLocationStream() {
     if (_realtime == null || _channel == null) {
-      print('[AblyService] Stream requested but channel not ready.');
+      debugPrint('[AblyService] Stream requested but channel not ready.');
       return const Stream.empty();
     }
     return _channel!.subscribe();
@@ -93,6 +106,13 @@ class AblyService {
     final msg = history.items.first;
     final data = msg.data as Map?;
     return msg.name == 'session_state' && data?['state'] == 'started';
+  }
+  void publishSpotlight(bool isOn) {
+    if (_channel == null) return;
+    _channel!.publish(
+      name: 'spotlight',
+      data: {'active': isOn},
+    );
   }
 
   // ── Presence ──────────────────────────────────────────────────────────────
