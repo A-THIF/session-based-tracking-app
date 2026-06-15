@@ -68,7 +68,7 @@ class RadarPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     var paintLine = Paint()
-      ..color = const Color(0xFF5AB9EA).withOpacity(1.0 - animationValue)
+      ..color = const Color(0xFF5AB9EA).withValues(alpha: 1.0 - animationValue)
       ..strokeWidth = 2
       ..style = PaintingStyle.stroke;
 

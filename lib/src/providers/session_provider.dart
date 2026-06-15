@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'package:ably_flutter/ably_flutter.dart' as ably;
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/session_model.dart';
 import '../services/api_service.dart';
 import '../services/ably_service.dart';
 
-enum SessionStatus { idle, loading, waiting, tracking, error }
+enum SessionStatus { idle, loading, waiting, tracking, error, terminated }
 
 class SessionState {
   final Session? session;
@@ -51,6 +52,7 @@ class SessionState {
 class SessionNotifier extends StateNotifier<SessionState> {
   final ApiService _api;
   final Ref _ref;
+  bool _isProcessing = false; // guards against duplicate network calls
 
   SessionNotifier(this._api, this._ref) : super(const SessionState());
 
@@ -75,12 +77,33 @@ class SessionNotifier extends StateNotifier<SessionState> {
     }
   }
 
+  // ── Session persistence (rejoin support) ─────────────────────────────────
+
+  static const _kActiveSessionKey = 'active_session_code';
+
+  Future<void> _saveActiveSession(String code) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kActiveSessionKey, code);
+  }
+
+  Future<void> _clearActiveSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kActiveSessionKey);
+  }
+
+  static Future<String?> readSavedSessionCode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_kActiveSessionKey);
+  }
+
   // ── Community 1: Home actions ────────────────────────────────────────────
 
   Future<void> startNewSession() async {
+    if (_isProcessing) return;
+    _isProcessing = true;
     state = state.copyWith(status: SessionStatus.loading);
     try {
-      final id = await _getUuid(); // ← UUID now, not device model
+      final id = await _getUuid();
       final data = await _api.createSession(60);
       final session = Session(code: data['sessionCode'] as String);
 
@@ -97,13 +120,17 @@ class SessionNotifier extends StateNotifier<SessionState> {
         status: SessionStatus.error,
         errorMessage: _friendlyError(e.toString()),
       );
+    } finally {
+      _isProcessing = false;
     }
   }
 
   Future<void> joinSession(String code) async {
+    if (_isProcessing) return;
+    _isProcessing = true;
     state = state.copyWith(status: SessionStatus.loading);
     try {
-      final id = await _getUuid(); // ← UUID now, not device model
+      final id = await _getUuid();
       final session = await _api.joinSession(code, id);
 
       state = state.copyWith(
@@ -112,12 +139,15 @@ class SessionNotifier extends StateNotifier<SessionState> {
         status: SessionStatus.waiting,
         isHost: false,
       );
+      await _saveActiveSession(code);
       await _initAbly(code, id);
     } catch (e) {
       state = state.copyWith(
         status: SessionStatus.error,
         errorMessage: _friendlyError(e.toString()),
       );
+    } finally {
+      _isProcessing = false;
     }
   }
 
@@ -177,8 +207,14 @@ class SessionNotifier extends StateNotifier<SessionState> {
     ablyService.subscribeToChannelMessages().listen((message) {
       if (!mounted) return;
       final data = message.data as Map?;
-      if (message.name == 'session_state' && data?['state'] == 'started') {
-        state = state.copyWith(status: SessionStatus.tracking);
+      if (message.name == 'session_state') {
+        if (data?['state'] == 'started') {
+          state = state.copyWith(status: SessionStatus.tracking);
+        } else if (data?['state'] == 'ended' && !state.isHost) {
+          // Only guests react to the remote kill signal.
+          // Hosts triggered this themselves via cancelSession().
+          _handleRemoteTermination();
+        }
       }
     });
   }
@@ -192,9 +228,68 @@ class SessionNotifier extends StateNotifier<SessionState> {
 
   // ── Cancel / leave session ────────────────────────────────────────────────
 
-  void cancelSession() {
+  /// Host path: fires HTTP end + Ably broadcast before clearing local state.
+  /// Guest path: just disposes Ably and resets state.
+  Future<void> cancelSession() async {
+    final sessionCode = state.session?.code;
+    final wasHost = state.isHost;
+
+    if (wasHost && sessionCode != null) {
+      try {
+        _ref.read(ablyServiceProvider).publishSessionEnded();
+        await _api.endSession(sessionCode);
+      } catch (e) {
+        debugPrint('[Session] endSession HTTP failed: $e');
+      }
+    }
+
+    _ref.read(ablyServiceProvider).dispose();
+    await _clearActiveSession();
+    state = const SessionState();
+  }
+
+  /// Guest path: quietly drops local connection without touching the backend.
+  /// The session stays alive for the host.
+  Future<void> leaveSession() async {
+    await _clearActiveSession();
     _ref.read(ablyServiceProvider).dispose();
     state = const SessionState();
+  }
+
+  /// Crash-recovery rejoin: validates the room is still alive then pushes
+  /// straight to tracking. Clears stored code if the room is gone.
+  /// Returns true if rejoin succeeded so the UI can navigate.
+  Future<bool> rejoinSession(String code) async {
+    state = state.copyWith(status: SessionStatus.loading);
+    try {
+      final id = await _getUuid();
+      final session = await _api.joinSession(code, id);
+
+      state = state.copyWith(
+        session: session,
+        deviceId: id,
+        status: SessionStatus.tracking,
+        isHost: false,
+      );
+      await _initAbly(code, id);
+      return true;
+    } catch (e) {
+      // Room is gone — clear stale key and drop back to idle.
+      await _clearActiveSession();
+      state = state.copyWith(
+        status: SessionStatus.idle,
+        errorMessage: _friendlyError(e.toString()),
+      );
+      return false;
+    }
+  }
+
+  /// Called by the Ably listener when a guest receives 'ended' from the host.
+  /// Sets status to [SessionStatus.terminated] so the UI can show a dialog
+  /// before navigating away — keeps BuildContext out of this notifier.
+  void _handleRemoteTermination() {
+    _ref.read(ablyServiceProvider).dispose();
+    state = state.copyWith(status: SessionStatus.terminated);
   }
 
   // ── Utility ───────────────────────────────────────────────────────────────

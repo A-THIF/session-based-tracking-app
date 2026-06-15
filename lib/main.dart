@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'src/constants/retro_theme.dart';
+import 'src/theme/retro_theme.dart';
 import 'src/providers/user_provider.dart';
 import 'src/services/background_service.dart'; // Note: I am using the paths you provided in your earlier snippets
 import 'src/views/home_screen.dart'; 

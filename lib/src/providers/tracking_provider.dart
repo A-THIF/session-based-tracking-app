@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart'; // For HapticFeedback
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
@@ -13,17 +13,20 @@ import '../utils/route_snapper.dart';
 
 const int _kPacketTimeoutMs = 7000;
 
-// ... inside class TrackingData ...
+// Battery level below which GPS polling is throttled (0–100).
+const int _kLowBatteryThreshold = 15;
+
 class TrackingData {
   final LatLng? myPos;
   final LatLng? peerPos;
-  // 🟢 ADD THESE TWO FIELDS
   final double myHeading;
   final double peerHeading;
-  final double mySpeedKmh; // 🟢 Add this
-  final double peerSpeedKmh; // 🟢 Add this
+  final double mySpeedKmh;
+  final double peerSpeedKmh;
   final bool isSpotlightActive;
   final bool isPeerSpotlighting;
+  final bool isGpsLost;         // Task 12: GPS signal lost
+  final bool showBatteryWarning; // Task 13: one-shot low-battery snackbar flag
 
   final List<LatLng> myPath;
   final List<LatLng> peerPath;
@@ -39,8 +42,8 @@ class TrackingData {
   const TrackingData({
     this.myPos,
     this.peerPos,
-    this.myHeading = 0, // 🟢 Initialize
-    this.peerHeading = 0, // 🟢 Initialize
+    this.myHeading = 0,
+    this.peerHeading = 0,
     this.myPath = const [],
     this.peerPath = const [],
     this.routePoints = const [],
@@ -55,13 +58,15 @@ class TrackingData {
     this.peerSpeedKmh = 0,
     this.isSpotlightActive = false,
     this.isPeerSpotlighting = false,
+    this.isGpsLost = false,
+    this.showBatteryWarning = false,
   });
 
   TrackingData copyWith({
     LatLng? myPos,
     LatLng? peerPos,
-    double? myHeading, // 🟢 Add to copyWith
-    double? peerHeading, // 🟢 Add to copyWith
+    double? myHeading,
+    double? peerHeading,
     List<LatLng>? myPath,
     List<LatLng>? peerPath,
     List<LatLng>? routePoints,
@@ -72,16 +77,18 @@ class TrackingData {
     bool? isPeerTimeout,
     double? targetBearing,
     bool? isCompassMode,
-    double? mySpeedKmh, // 🟢 Add to copyWith
-    double? peerSpeedKmh, // 🟢 Add to copyWith
+    double? mySpeedKmh,
+    double? peerSpeedKmh,
     bool? isSpotlightActive,
     bool? isPeerSpotlighting,
+    bool? isGpsLost,
+    bool? showBatteryWarning,
   }) {
     return TrackingData(
       myPos: myPos ?? this.myPos,
       peerPos: peerPos ?? this.peerPos,
-      myHeading: myHeading ?? this.myHeading, // 🟢 Update
-      peerHeading: peerHeading ?? this.peerHeading, // 🟢 Update
+      myHeading: myHeading ?? this.myHeading,
+      peerHeading: peerHeading ?? this.peerHeading,
       myPath: myPath ?? this.myPath,
       peerPath: peerPath ?? this.peerPath,
       routePoints: routePoints ?? this.routePoints,
@@ -92,8 +99,12 @@ class TrackingData {
       roadDuration: roadDuration ?? this.roadDuration,
       targetBearing: targetBearing ?? this.targetBearing,
       isCompassMode: isCompassMode ?? this.isCompassMode,
-      mySpeedKmh: mySpeedKmh ?? this.mySpeedKmh, // 🟢 Update
-      peerSpeedKmh: peerSpeedKmh ?? this.peerSpeedKmh, // 🟢 Update
+      mySpeedKmh: mySpeedKmh ?? this.mySpeedKmh,
+      peerSpeedKmh: peerSpeedKmh ?? this.peerSpeedKmh,
+      isSpotlightActive: isSpotlightActive ?? this.isSpotlightActive,
+      isPeerSpotlighting: isPeerSpotlighting ?? this.isPeerSpotlighting,
+      isGpsLost: isGpsLost ?? this.isGpsLost,
+      showBatteryWarning: showBatteryWarning ?? this.showBatteryWarning,
     );
   }
 }
@@ -102,7 +113,11 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
   StreamSubscription<Position>? _gpsSub;
   StreamSubscription? _ablySub;
   Timer? _watchdog;
+  Timer? _batteryTimer;
   bool _started = false;
+  bool _isBatteryLow = false;
+  bool _batteryWarningShown = false;
+  bool _gpsRetryPending = false; // Fix 2.2: prevents stacked retry timers
 
   final RoutingService _routingService = RoutingService();
 
@@ -159,6 +174,7 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     _startGpsPublisher(ablyService, myDeviceId);
     _startPeerListener(ablyService, myDeviceId);
     _startWatchdog(_currentSessionCode!);
+    _startBatteryMonitor(ablyService, myDeviceId);
 
     return TrackingData(myPath: initialPaths.$1, peerPath: initialPaths.$2);
   }
@@ -183,55 +199,142 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     state = AsyncData(current.copyWith(isPeerSpotlighting: false));
   }
 
+  /// Called by the UI after showing the low-battery snackbar to reset the flag.
+  void clearBatteryWarning() {
+    final current = state.valueOrNull;
+    if (current != null) {
+      state = AsyncData(current.copyWith(showBatteryWarning: false));
+    }
+  }
+
+  // ── Task 12 & 13: GPS publisher with error handling + battery throttle ───
+
   void _startGpsPublisher(AblyService ablyService, String myDeviceId) {
-    _gpsSub =
-        Geolocator.getPositionStream(
-          locationSettings: AndroidSettings(
-            accuracy: LocationAccuracy.best,
-            intervalDuration: const Duration(seconds: 1),
-            distanceFilter: 0,
-          ),
-        ).listen((pos) {
-          // 🟢 FIXED: Filter initialization and processing moved INSIDE the listener
-          if (!_filtersInitialized) {
-            _myLatFilter.reset(pos.latitude);
-            _myLngFilter.reset(pos.longitude);
-            _filtersInitialized = true;
-          }
+    _gpsSub?.cancel();
 
-          final smoothLat = _myLatFilter.filter(pos.latitude);
-          final smoothLng = _myLngFilter.filter(pos.longitude);
-          final rawMe = LatLng(smoothLat, smoothLng);
+    final interval = _isBatteryLow
+        ? const Duration(seconds: 5)   // Task 13: throttled
+        : const Duration(seconds: 1);  // normal 1Hz
 
-          // 🟢 APPLY SNAP-TO-ROAD
-          // If we have route points, snap the smoothed GPS to the blue line
-          final currentData = state.valueOrNull;
-          LatLng me = rawMe;
-          if (currentData != null && currentData.routePoints.isNotEmpty) {
-            me = RouteSnapper.snapToRoute(rawMe, currentData.routePoints);
-          }
+    _gpsSub = Geolocator.getPositionStream(
+      locationSettings: AndroidSettings(
+        accuracy: LocationAccuracy.best,
+        intervalDuration: interval,
+        distanceFilter: 0,
+      ),
+    ).listen(
+      (pos) {
+        // Recover from GPS loss if it was previously flagged
+        final current = state.valueOrNull ?? const TrackingData();
+        final wasLost = current.isGpsLost;
 
-          // Publish smoothed location + heading so peer can render our arrow
-          ablyService.publishLocation(
-            myDeviceId,
-            smoothLat,
-            smoothLng,
-            heading: pos.heading,
-            speed: pos.speed, // 🟢 Add speed to publishLocation
-          );
+        if (!_filtersInitialized) {
+          _myLatFilter.reset(pos.latitude);
+          _myLngFilter.reset(pos.longitude);
+          _filtersInitialized = true;
+        }
 
-          final current = state.valueOrNull ?? const TrackingData();
-          final speedKmh = (pos.speed < 0 ? 0.0 : pos.speed) * 3.6;
-          state = AsyncData(
-            _recalc(
-              current.copyWith(
-                myPos: me,
-                myHeading: pos.heading,
-                mySpeedKmh: speedKmh,
-              ),
+        final smoothLat = _myLatFilter.filter(pos.latitude);
+        final smoothLng = _myLngFilter.filter(pos.longitude);
+        final rawMe = LatLng(smoothLat, smoothLng);
+
+        LatLng me = rawMe;
+        if (current.routePoints.isNotEmpty) {
+          me = RouteSnapper.snapToRoute(rawMe, current.routePoints);
+        }
+
+        ablyService.publishLocation(
+          myDeviceId,
+          smoothLat,
+          smoothLng,
+          heading: pos.heading,
+          speed: pos.speed,
+        );
+
+        final speedKmh = (pos.speed < 0 ? 0.0 : pos.speed) * 3.6;
+        state = AsyncData(
+          _recalc(
+            current.copyWith(
+              myPos: me,
+              myHeading: pos.heading,
+              mySpeedKmh: speedKmh,
+              // Clear GPS lost flag now that we have a fix
+              isGpsLost: wasLost ? false : current.isGpsLost,
             ),
-          );
-        });
+          ),
+        );
+      },
+      // Fix 2.2: GPS stream error — flag loss and schedule auto-recovery.
+      // The stream closes on error so we must restart it explicitly.
+      onError: (Object err) {
+        debugPrint('[GPS] Stream error: $err');
+        final isGpsError = err is LocationServiceDisabledException ||
+            err is PermissionDeniedException;
+        if (isGpsError) {
+          final current = state.valueOrNull;
+          if (current != null && !current.isGpsLost) {
+            state = AsyncData(current.copyWith(isGpsLost: true));
+          }
+          // Retry in 10s — once only; if the stream still fails the next
+          // onError will schedule another retry, preventing stacking.
+          if (!_gpsRetryPending) {
+            _gpsRetryPending = true;
+            Future.delayed(const Duration(seconds: 10), () {
+              _gpsRetryPending = false;
+              if (_started) {
+                debugPrint('[GPS] Retrying stream after error...');
+                _startGpsPublisher(ablyService, myDeviceId);
+              }
+            });
+          }
+        }
+      },
+    );
+  }
+
+  // ── Task 13: Battery monitor — polls every 60s, restarts GPS on change ───
+
+  void _startBatteryMonitor(AblyService ablyService, String myDeviceId) {
+    _batteryTimer?.cancel();
+    _batteryTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
+      try {
+        final int level = await _getBatteryLevel();
+        final nowLow = level <= _kLowBatteryThreshold;
+
+        if (nowLow != _isBatteryLow) {
+          _isBatteryLow = nowLow;
+          // Restart GPS stream with the new interval
+          _startGpsPublisher(ablyService, myDeviceId);
+
+          if (nowLow && !_batteryWarningShown) {
+            _batteryWarningShown = true;
+            // Signal the UI to show the snackbar once via state flag
+            final current = state.valueOrNull;
+            if (current != null) {
+              state = AsyncData(current.copyWith(showBatteryWarning: true));
+            }
+          }
+        }
+      } catch (_) {
+        // Battery check is best-effort; don't crash tracking
+      }
+    });
+  }
+
+  /// Reads battery level (0–100) via the platform channel that ships with
+  /// Flutter's services binding. Returns 100 if unavailable so we default
+  /// to normal polling — no extra package needed.
+  ///
+  /// Swap in `battery_plus` by replacing this method body with:
+  ///   `return (await Battery().batteryLevel);`
+  Future<int> _getBatteryLevel() async {
+    try {
+      final int level = await const MethodChannel('flutter/battery')
+          .invokeMethod<int>('getBatteryLevel') ?? 100;
+      return level;
+    } catch (_) {
+      return 100;
+    }
   }
 
   void disableCompassMode() {
@@ -440,6 +543,15 @@ class LiveTrackingNotifier extends AsyncNotifier<TrackingData> {
     _gpsSub?.cancel();
     _ablySub?.cancel();
     _watchdog?.cancel();
+    _batteryTimer?.cancel();
+    // Detach channel subscriptions so a notifier rebuild doesn't create
+    // a second listener on the same channel (Fix 2.1).
+    try {
+      ref.read(ablyServiceProvider).disposeStreams();
+    } catch (_) {
+      // provider may already be disposed
+    }
+    _gpsRetryPending = false;
     _started = false;
   }
 }

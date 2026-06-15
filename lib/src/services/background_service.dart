@@ -118,6 +118,5 @@ void onStart(ServiceInstance service) async {
             },
           );
         });
-    ;
   });
 }

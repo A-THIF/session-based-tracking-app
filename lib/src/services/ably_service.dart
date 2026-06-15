@@ -48,8 +48,19 @@ class AblyService {
       _initializedSessionCode = sessionCode;
 
       final opts = ably.ClientOptions();
-      opts.tokenDetails = ably.TokenDetails(tokenString);
       opts.clientId = deviceId;
+
+      // Bootstrap with the token we just fetched so the first connect is
+      // immediate. The authCallback takes over for all subsequent renewals —
+      // this prevents the silent 1-hour expiry disconnection (Fix 1.1).
+      opts.tokenDetails = ably.TokenDetails(tokenString);
+      opts.authCallback = (ably.TokenParams params) async {
+        debugPrint('[AblyService] Token renewal triggered — fetching new token');
+        final refreshed = await _apiService.getAblyToken(sessionCode);
+        final newToken = refreshed['token'] as String?;
+        if (newToken == null) throw Exception('Token refresh returned null');
+        return ably.TokenDetails(newToken);
+      };
 
       _realtime = ably.Realtime(options: opts);
       await _realtime!.connect();
@@ -100,6 +111,13 @@ class AblyService {
     _channel?.publish(name: 'session_state', data: {'state': 'started'});
   }
 
+  void publishSessionEnded({String reason = 'host_ended'}) {
+    _channel?.publish(
+      name: 'session_state',
+      data: {'state': 'ended', 'reason': reason},
+    );
+  }
+
   Future<bool> hasSessionStarted() async {
     final history = await getChannelHistory(limit: 1);
     if (history.items.isEmpty) return false;
@@ -145,6 +163,18 @@ class AblyService {
   }
 
   // ── Cleanup ───────────────────────────────────────────────────────────────
+
+  /// Detaches all channel subscriptions without closing the Realtime
+  /// connection. Call this from [LiveTrackingNotifier._dispose] so that a
+  /// notifier rebuild doesn't leave orphaned listeners on the channel that
+  /// would cause duplicate message processing (Fix 2.1).
+  void disposeStreams() {
+    try {
+      _channel?.detach();
+    } catch (_) {
+      // best-effort — channel may already be detached
+    }
+  }
 
   void dispose() {
     _realtime?.close();

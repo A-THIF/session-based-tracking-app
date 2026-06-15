@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/session_model.dart';
 import '../config/constants.dart';
 import 'user_service.dart';
@@ -27,10 +26,11 @@ class ApiService {
 
   Future<Map<String, dynamic>> createSession(int duration) async {
     try {
+      final deviceId = await getDeviceId();
       final response = await http.post(
         Uri.parse('$_baseUrl/session/create'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'duration': duration}),
+        body: jsonEncode({'duration': duration, 'deviceId': deviceId}),
       );
       return jsonDecode(response.body);
     } catch (e) {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import '../theme/trace_colors.dart';
 
 class RouteLineWidget extends StatelessWidget {
   final List<LatLng> routePoints;
@@ -8,27 +9,36 @@ class RouteLineWidget extends StatelessWidget {
   const RouteLineWidget({super.key, required this.routePoints});
 
   @override
-Widget build(BuildContext context) {
-  if (routePoints.isEmpty) return const SizedBox.shrink();
+  Widget build(BuildContext context) {
+    if (routePoints.isEmpty) return const SizedBox.shrink();
 
-  return PolylineLayer(
-    polylines: [
-      // 1. THE OUTLINE (Draw this first)
-      Polyline(
-        points: routePoints,
-        color: const Color(0xFF0F172A), // Dark outline color
-        strokeWidth: 7.0, // Thicker
-        strokeCap: StrokeCap.round,
-        strokeJoin: StrokeJoin.round,
-      ),
-      // 2. THE MAIN LINE
-      Polyline(
-        points: routePoints,
-        color: const Color(0xFF4ECDC4), // Main brand color
-        strokeWidth: 4.0, // Thinner
-        strokeCap: StrokeCap.round,
-        strokeJoin: StrokeJoin.round,
-      ),
-    ],
-  );
-}}
+    return PolylineLayer(
+      polylines: [
+        // Layer 1 — Base Neon Glow (bottom)
+        Polyline(
+          points: routePoints,
+          color: TraceColors.neonTeal.withValues(alpha: 0.2),
+          strokeWidth: 12.0,
+          strokeCap: StrokeCap.round,
+          strokeJoin: StrokeJoin.round,
+        ),
+        // Layer 2 — Outer Highlight Rim (middle)
+        Polyline(
+          points: routePoints,
+          color: TraceColors.neonTeal.withValues(alpha: 0.5),
+          strokeWidth: 7.0,
+          strokeCap: StrokeCap.round,
+          strokeJoin: StrokeJoin.round,
+        ),
+        // Layer 3 — Inner Solid Core (top)
+        Polyline(
+          points: routePoints,
+          color: TraceColors.neonTeal,
+          strokeWidth: 3.5,
+          strokeCap: StrokeCap.round,
+          strokeJoin: StrokeJoin.round,
+        ),
+      ],
+    );
+  }
+}

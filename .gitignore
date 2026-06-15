@@ -50,3 +50,5 @@ graphify-out/
 GRAPH_REPORT.md
 .env
 lib/src/config/env.g.dart
+.kiro/skills/graphify/SKILL.md
+/.kiro

@@ -9,18 +9,29 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/session_provider.dart';
 import '../widgets/radar_animation_widget.dart';
 import '../widgets/presence_status_widgets.dart';
+import '../widgets/session_code_card.dart';
+import '../widgets/start_tracking_button.dart';
 import 'tracking_screen.dart';
 
-class WaitingRoomScreen extends ConsumerWidget {
+class WaitingRoomScreen extends ConsumerStatefulWidget {
   const WaitingRoomScreen({super.key});
 
-  void _cancel(BuildContext context, WidgetRef ref) {
-    ref.read(sessionProvider.notifier).cancelSession();
-    Navigator.of(context).popUntil((route) => route.isFirst);
+  @override
+  ConsumerState<WaitingRoomScreen> createState() => _WaitingRoomScreenState();
+}
+
+class _WaitingRoomScreenState extends ConsumerState<WaitingRoomScreen> {
+  bool _hasNavigated = false;
+
+  Future<void> _cancel(BuildContext context) async {
+    await ref.read(sessionProvider.notifier).cancelSession();
+    if (mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider);
     final isHost = session.isHost;
     final code = session.session?.code ?? '------';
@@ -29,9 +40,49 @@ class WaitingRoomScreen extends ConsumerWidget {
 
     ref.listen<SessionState>(sessionProvider, (previous, next) {
       if (next.status == SessionStatus.tracking) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const TrackingScreen()),
+        if (!_hasNavigated) {
+          _hasNavigated = true;
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const TrackingScreen()),
+          );
+        }
+      } else if (next.status == SessionStatus.terminated) {
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            title: const Text(
+              'Session Ended',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            content: const Text(
+              'The host has ended this tracking session.',
+              style: TextStyle(color: Color(0xFF7A9BC0), fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(ctx); // dismiss dialog first
+                  await ref.read(sessionProvider.notifier).cancelSession();
+                  if (context.mounted) {
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  }
+                },
+                child: const Text(
+                  'OK',
+                  style: TextStyle(color: Color(0xFF4ECDC4)),
+                ),
+              ),
+            ],
+          ),
         );
       }
     });
@@ -58,7 +109,7 @@ class WaitingRoomScreen extends ConsumerWidget {
                     ),
                   ),
                   GestureDetector(
-                    onTap: () => _cancel(context, ref),
+                    onTap: () => _cancel(context),
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 14,
@@ -96,44 +147,7 @@ class WaitingRoomScreen extends ConsumerWidget {
               const SizedBox(height: 32),
 
               // ── Session code card ──────────────────────────────────────
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: const Color(0xFF5AB9EA).withValues(alpha: 0.3),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    const Text(
-                      'SESSION CODE',
-                      style: TextStyle(
-                        color: Color(0xFF7A9BC0),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 3,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      code,
-                      style: const TextStyle(
-                        color: Color(0xFF5AB9EA),
-                        fontSize: 40,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 10,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Share this code with your friend',
-                      style: TextStyle(color: Color(0xFF3D5A80), fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
+              SessionCodeCard(code: code),
 
               const SizedBox(height: 28),
 
@@ -152,62 +166,11 @@ class WaitingRoomScreen extends ConsumerWidget {
 
               // ── Host: START TRACKING button ────────────────────────────
               if (isHost)
-                GestureDetector(
+                StartTrackingButton(
+                  hasPeer: hasPeer,
                   onTap: hasPeer
                       ? () => ref.read(sessionProvider.notifier).beginTracking()
                       : null,
-                  child: AnimatedOpacity(
-                    opacity: hasPeer ? 1.0 : 0.4,
-                    duration: const Duration(milliseconds: 300),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 18),
-                      decoration: BoxDecoration(
-                        color: hasPeer
-                            ? const Color(0xFF4ECDC4).withValues(alpha: 0.15)
-                            : const Color(0xFF1E293B),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: hasPeer
-                              ? const Color(0xFF4ECDC4)
-                              : const Color(0xFF1E3A5F),
-                          width: 1.5,
-                        ),
-                        boxShadow: hasPeer
-                            ? [
-                                BoxShadow(
-                                  color: const Color(0xFF4ECDC4)
-                                      .withValues(alpha: 0.2),
-                                  blurRadius: 20,
-                                ),
-                              ]
-                            : [],
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.play_arrow_rounded,
-                            color: hasPeer
-                                ? const Color(0xFF4ECDC4)
-                                : const Color(0xFF3D5A80),
-                            size: 22,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            hasPeer ? 'START TRACKING' : 'WAITING FOR PEER…',
-                            style: TextStyle(
-                              color: hasPeer
-                                  ? const Color(0xFF4ECDC4)
-                                  : const Color(0xFF3D5A80),
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                 ),
 
               const SizedBox(height: 16),

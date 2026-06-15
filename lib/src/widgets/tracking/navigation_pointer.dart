@@ -15,7 +15,6 @@ enum PuckType { self, peer }
 
 // Speed thresholds
 const double _kHighSpeedKmh = 30.0;
-const double _kIdleSpeedKmh = 2.0;
 
 class NavigationPuck extends StatefulWidget {
   final PuckType type;
@@ -77,10 +76,15 @@ class _NavigationPuckState extends State<NavigationPuck>
   // ── Color helpers ──────────────────────────────────────────────────────────
 
   Color get _baseColor {
-    if (widget.type == PuckType.self) return const Color(0xFF4ECDC4);
+    if (widget.type == PuckType.self) {
+      // Task 12: grey arrow when GPS signal is lost
+      return widget.isTimeout
+          ? const Color(0xFF78909C) // blue-grey / lost signal
+          : const Color(0xFF4ECDC4);
+    }
     if (widget.isTimeout) return const Color(0xFFE05252);
     return widget.speedKmh >= _kHighSpeedKmh
-        ? const Color(0xFFFFAA55) // brighter for high speed
+        ? const Color(0xFFFFAA55)
         : const Color(0xFFFF8C42);
   }
 
@@ -106,7 +110,7 @@ class _NavigationPuckState extends State<NavigationPuck>
           // Animated accuracy halo
           AnimatedBuilder(
             animation: _haloAnim,
-            builder: (_, __) => Container(
+            builder: (_, child) => Container(
               width: 64,
               height: 64,
               decoration: BoxDecoration(
@@ -185,7 +189,7 @@ class _NavigationPuckState extends State<NavigationPuck>
             top: 22,
             child: AnimatedBuilder(
               animation: _haloAnim,
-              builder: (_, __) => Stack(
+              builder: (_, child) => Stack(
                 alignment: Alignment.center,
                 clipBehavior: Clip.none,
                 children: [
@@ -361,7 +365,6 @@ class _TailPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
-    final cy = size.height / 2;
     final paint = Paint()..color = color;
 
     // Small equilateral triangle pointing UP (0° = North)

@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/session_provider.dart';
 import '../widgets/permission_guard.dart';
 import '../widgets/session_cards.dart';
+import '../widgets/rejoin_banner.dart';
 import 'waiting_room_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -128,6 +129,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
 
               const SizedBox(height: 56),
+
+              // ── Rejoin banner (shown after crash/backgrounding) ────────
+              const RejoinBanner(),
 
               // ── START SESSION card ─────────────────────────────────────
               ActionCard(
